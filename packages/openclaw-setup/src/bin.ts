@@ -214,6 +214,7 @@ async function doctor(): Promise<number> {
     const authentication = await cloudAuthentication(
       endpoint,
       credentials.ingestKey,
+      credentials.installationId,
     );
     if (!authentication.ok)
       failures.push(
@@ -278,6 +279,15 @@ async function setup(options: {
     );
     return 1;
   }
+  let requestedInstallationId: string | undefined;
+  try {
+    requestedInstallationId = installationIdOption(options.args);
+  } catch (error) {
+    process.stderr.write(
+      `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 2;
+  }
   if (options.dryRun) {
     stdout.write(
       [
@@ -299,11 +309,6 @@ async function setup(options: {
     const serviceName =
       optionValue(options.args, '--service-name') ??
       (await prompt.question('Service name: ')).trim();
-    const configuredSecrets = consumeSetupSecretEnvironment();
-    if (!configuredSecrets.ingestKey) prompt.close();
-    const ingestKey =
-      configuredSecrets.ingestKey ??
-      (await hiddenQuestion('Ingestion key (hidden): '));
     const credentialPath = credentialsPath();
     let existingCredentials: SetupCredentials | undefined;
     try {
@@ -317,17 +322,37 @@ async function setup(options: {
         return 1;
       }
     }
+    if (!existingCredentials && !requestedInstallationId) {
+      process.stderr.write(
+        'FAIL First setup requires --installation-id with the ID assigned to this host.\n',
+      );
+      return 2;
+    }
+    const configuredSecrets = consumeSetupSecretEnvironment();
+    if (!configuredSecrets.ingestKey) prompt.close();
+    const ingestKey =
+      configuredSecrets.ingestKey ??
+      (await hiddenQuestion('Ingestion key (hidden): '));
     if (!ingestKey) {
       process.stderr.write(
         'An ingestion key is required and identity key must contain 32+ characters. Secrets are never accepted on command lines.\n',
       );
       return 1;
     }
-    const credentials = createManagedSetupCredentials(
-      ingestKey,
-      existingCredentials,
-      configuredSecrets.identityKey,
-    );
+    let credentials: SetupCredentials;
+    try {
+      credentials = createManagedSetupCredentials(
+        ingestKey,
+        existingCredentials,
+        configuredSecrets.identityKey,
+        requestedInstallationId,
+      );
+    } catch (error) {
+      process.stderr.write(
+        `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return 1;
+    }
     if (credentials.identityKey.length < 32) {
       process.stderr.write(
         'An ingestion key is required and identity key must contain 32+ characters. Secrets are never accepted on command lines.\n',
@@ -347,7 +372,11 @@ async function setup(options: {
       );
       return 1;
     }
-    const authentication = await cloudAuthentication(endpoint, ingestKey);
+    const authentication = await cloudAuthentication(
+      endpoint,
+      ingestKey,
+      credentials.installationId,
+    );
     if (!authentication.ok) {
       process.stderr.write(
         `Cloud ingest authentication failed before setup: ${authentication.error}\n`,
@@ -383,33 +412,14 @@ async function setup(options: {
       dirname(credentialPath),
       'openclaw-config-patch.json',
     );
-    const patch = {
-      secrets: {
-        providers: {
-          semantic_layer: {
-            source: 'file',
-            path: credentialPath,
-            mode: 'json',
-          },
-        },
-      },
-      gateway: { mode: 'local', bind: 'loopback' },
-      plugins: {
-        entries: {
-          [PLUGIN_ID]: {
-            enabled: true,
-            hooks: { allowConversationAccess: true, timeoutMs: 10_000 },
-            config: createPluginConfig({
-              endpoint,
-              serviceName,
-              outputDirectory,
-              spoolDirectory,
-              credentials,
-            }),
-          },
-        },
-      },
-    };
+    const patch = createOpenClawConfigPatch({
+      endpoint,
+      serviceName,
+      credentialPath,
+      outputDirectory,
+      spoolDirectory,
+      credentials,
+    });
     await writeFile(patchPath, `${JSON.stringify(patch, null, 2)}\n`, {
       mode: 0o600,
       flag: 'w',
@@ -447,6 +457,43 @@ async function setup(options: {
   return doctor();
 }
 
+function createOpenClawConfigPatch(input: {
+  endpoint: string;
+  serviceName: string;
+  credentialPath: string;
+  outputDirectory: string;
+  spoolDirectory: string;
+  credentials: SetupCredentials;
+}): Record<string, unknown> {
+  return {
+    secrets: {
+      providers: {
+        semantic_layer: {
+          source: 'file',
+          path: input.credentialPath,
+          mode: 'json',
+        },
+      },
+    },
+    gateway: { mode: 'local', bind: 'loopback' },
+    plugins: {
+      entries: {
+        [PLUGIN_ID]: {
+          enabled: true,
+          hooks: { allowConversationAccess: true, timeoutMs: 10_000 },
+          config: createPluginConfig({
+            endpoint: input.endpoint,
+            serviceName: input.serviceName,
+            outputDirectory: input.outputDirectory,
+            spoolDirectory: input.spoolDirectory,
+            credentials: input.credentials,
+          }),
+        },
+      },
+    },
+  };
+}
+
 async function rotateIngestionKey(): Promise<number> {
   const previous = await readSetupCredentials().catch((error: unknown) => {
     process.stderr.write(
@@ -476,7 +523,11 @@ async function rotateIngestionKey(): Promise<number> {
     process.stderr.write('FAIL A new ingestion key is required.\n');
     return 1;
   }
-  const authentication = await cloudAuthentication(endpoint, nextKey);
+  const authentication = await cloudAuthentication(
+    endpoint,
+    nextKey,
+    previous.installationId,
+  );
   if (!authentication.ok) {
     process.stderr.write(
       `FAIL New cloud ingest authentication failed: ${authentication.error}\n`,
@@ -618,6 +669,7 @@ export function createManagedSetupCredentials(
   ingestKey: string,
   existing?: ExistingSetupCredentials,
   requestedIdentityKey?: string,
+  requestedInstallationId?: string,
 ): SetupCredentials {
   if (
     existing?.installationId !== undefined &&
@@ -627,11 +679,35 @@ export function createManagedSetupCredentials(
       'Existing setup state contains an invalid installation ID.',
     );
   }
+  if (
+    requestedInstallationId !== undefined &&
+    !isInstallationId(requestedInstallationId)
+  ) {
+    throw new TypeError(
+      'Requested installation ID must use the install_ prefix followed by 32 lowercase hexadecimal characters.',
+    );
+  }
+  if (
+    existing?.installationId !== undefined &&
+    requestedInstallationId !== undefined &&
+    existing.installationId !== requestedInstallationId
+  ) {
+    throw new TypeError(
+      'Requested installation ID does not match the existing setup state.',
+    );
+  }
+  const installationId =
+    existing?.installationId ?? requestedInstallationId;
+  if (installationId === undefined) {
+    throw new TypeError(
+      'An assigned installation ID is required for first setup.',
+    );
+  }
   return {
     ingestKey,
     identityKey:
       existing?.identityKey ?? requestedIdentityKey ?? generateIdentityKey(),
-    installationId: existing?.installationId ?? generateInstallationId(),
+    installationId,
   };
 }
 
@@ -859,6 +935,30 @@ function optionValue(
   return value && !value.startsWith('--') ? value.trim() : undefined;
 }
 
+export function installationIdOption(
+  args: string[] | undefined,
+): string | undefined {
+  const matches = (args ?? []).reduce<number[]>((indexes, value, index) => {
+    if (value === '--installation-id') indexes.push(index);
+    return indexes;
+  }, []);
+  if (matches.length === 0) return undefined;
+  if (matches.length > 1)
+    throw new TypeError('--installation-id may be provided only once.');
+  const index = matches[0];
+  if (index === undefined) return undefined;
+  const value = args?.[index + 1];
+  if (!value || value.startsWith('--'))
+    throw new TypeError('--installation-id requires a value.');
+  const trimmed = value.trim();
+  if (!isInstallationId(trimmed)) {
+    throw new TypeError(
+      '--installation-id must use the install_ prefix followed by 32 lowercase hexadecimal characters.',
+    );
+  }
+  return trimmed;
+}
+
 export function setupCommandPlan(
   packageSpec: string,
   patchPath: string,
@@ -930,24 +1030,36 @@ async function cloudHealth(
 async function cloudAuthentication(
   endpoint: string,
   ingestKey: string,
+  installationId: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const response = await fetch(
-      `${endpoint.replace(/\/+$/u, '')}/v1/bundles/doctor_probe/begin`,
+      `${endpoint.replace(/\/+$/u, '')}/v1/auth/verify`,
       {
         method: 'POST',
         headers: {
           authorization: `Bearer ${ingestKey}`,
           'content-type': 'application/json',
         },
-        body: '{}',
+        body: JSON.stringify({ installation_id: installationId }),
         signal: AbortSignal.timeout(10_000),
       },
     );
-    if (response.status === 400) return { ok: true };
+    if (response.ok) {
+      const value = (await response.json()) as unknown;
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).status === 'ok'
+      ) {
+        return { ok: true };
+      }
+      return { ok: false, error: 'verification response was malformed' };
+    }
     return {
       ok: false,
-      error: `expected authenticated validation response 400, received HTTP ${response.status}`,
+      error: `ingestion key and installation ID verification returned HTTP ${response.status}`,
     };
   } catch (error) {
     return {
@@ -957,8 +1069,25 @@ async function cloudAuthentication(
   }
 }
 
-async function hiddenQuestion(label: string): Promise<string> {
-  if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') {
+type HiddenQuestionInput = {
+  isTTY?: boolean;
+  setRawMode?: (enabled: boolean) => unknown;
+  resume: () => unknown;
+  pause: () => unknown;
+  on: (event: 'data', listener: (chunk: Buffer) => void) => unknown;
+  off: (event: 'data', listener: (chunk: Buffer) => void) => unknown;
+};
+
+type HiddenQuestionOutput = {
+  write: (value: string) => unknown;
+};
+
+export async function hiddenQuestion(
+  label: string,
+  input: HiddenQuestionInput = stdin,
+  output: HiddenQuestionOutput = stdout,
+): Promise<string> {
+  if (!input.isTTY || typeof input.setRawMode !== 'function') {
     const prompt = createInterface({ input: stdin, output: stdout });
     try {
       return (await prompt.question(label)).trim();
@@ -966,15 +1095,16 @@ async function hiddenQuestion(label: string): Promise<string> {
       prompt.close();
     }
   }
-  stdout.write(label);
-  stdin.setRawMode(true);
-  stdin.resume();
+  output.write(label);
+  input.setRawMode(true);
+  input.resume();
   return await new Promise<string>((resolveValue, reject) => {
     let value = '';
     const cleanup = () => {
-      stdin.off('data', onData);
-      stdin.setRawMode(false);
-      stdout.write('\n');
+      input.off('data', onData);
+      input.setRawMode?.(false);
+      input.pause();
+      output.write('\n');
     };
     const onData = (chunk: Buffer) => {
       for (const byte of chunk) {
@@ -992,12 +1122,12 @@ async function hiddenQuestion(label: string): Promise<string> {
         else value += String.fromCharCode(byte);
       }
     };
-    stdin.on('data', onData);
+    input.on('data', onData);
   });
 }
 
 function helpText(): string {
-  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--endpoint URL] [--service-name NAME] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nSetup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Run doctor while the Gateway is live. Stop the Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
+  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Run doctor while the Gateway is live. Stop the Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
 }
 
 if (

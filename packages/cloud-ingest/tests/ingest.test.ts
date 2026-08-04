@@ -98,6 +98,43 @@ describe('cloud ingest HTTP contract', () => {
     expect(denied.status).toBe(401);
   });
 
+  it('verifies that an active key belongs to the requested installation without writing state', async () => {
+    const secondKey = 'second-test-secret-key-with-enough-entropy';
+    const secondInstallation = 'install_BBBBBBBBBBBBBBBBBBBBBB';
+    const legacyKey = 'legacy-test-secret-key-with-enough-entropy';
+    const service = await start({
+      [sha256(Buffer.from(key))]: {
+        tenant_id: tenant,
+        installation_id: installation,
+        status: 'active',
+      },
+      [sha256(Buffer.from(secondKey))]: {
+        tenant_id: tenant,
+        installation_id: secondInstallation,
+        status: 'active',
+      },
+      [sha256(Buffer.from(legacyKey))]: tenant,
+    });
+    servers.push(service);
+    const verify = (token: string, installationId: unknown) =>
+      requestAs(service.url, token, '/v1/auth/verify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ installation_id: installationId }),
+      });
+
+    const accepted = await verify(key, installation);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({ status: 'ok' });
+    expect(await service.store.list('')).toEqual([]);
+    expect(await service.meterStore.list('')).toEqual([]);
+    expect((await verify(key, secondInstallation)).status).toBe(403);
+    expect((await verify(secondKey, secondInstallation)).status).toBe(200);
+    expect((await verify(key, 'customer-vm-1')).status).toBe(400);
+    expect((await verify(legacyKey, installation)).status).toBe(403);
+    expect(await service.store.list('')).toEqual([]);
+  });
+
   it('uploads exact parts and publishes complete.json last', async () => {
     const service = await start(); servers.push(service);
     const item = fixture();

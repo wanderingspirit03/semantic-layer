@@ -1,4 +1,11 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -12,7 +19,10 @@ import {
   doctorQualificationDescription,
   generateIdentityKey,
   generateInstallationId,
+  hiddenQuestion,
+  installationIdOption,
   installationConfigFailures,
+  main,
   standaloneSpoolGatewayFailures,
   standaloneSpoolUploaderOptions,
   packageInstallSpec,
@@ -105,16 +115,20 @@ describe('client setup command contract', () => {
     ).toBe('capability-checked but unqualified');
   });
 
-  it('generates one random installation identity and preserves it across setup reruns and key rotation', () => {
+  it('preserves one assigned installation identity across setup reruns and key rotation', () => {
+    const firstInstallationId = generateInstallationId();
+    const otherInstallationId = generateInstallationId();
     const first = createManagedSetupCredentials(
       'ingest-one',
       undefined,
       'i'.repeat(64),
+      firstInstallationId,
     );
     const otherVm = createManagedSetupCredentials(
       'ingest-other',
       undefined,
       'j'.repeat(64),
+      otherInstallationId,
     );
     const rotated = createManagedSetupCredentials(
       'ingest-two',
@@ -123,7 +137,7 @@ describe('client setup command contract', () => {
     );
 
     expect(generateInstallationId()).toMatch(/^install_[a-f0-9]{32}$/u);
-    expect(first.installationId).toMatch(/^install_[a-f0-9]{32}$/u);
+    expect(first.installationId).toBe(firstInstallationId);
     expect(otherVm.installationId).not.toBe(first.installationId);
     expect(rotated).toEqual({
       ingestKey: 'ingest-two',
@@ -157,6 +171,63 @@ describe('client setup command contract', () => {
         installationId: 'customer-hostname',
       }),
     ).toThrow(/installation ID/u);
+    expect(() =>
+      createManagedSetupCredentials(
+        'ingest-four',
+        undefined,
+        'm'.repeat(64),
+      ),
+    ).toThrow(/required/u);
+  });
+
+  it('uses an operator-provisioned installation identity and refuses to replace it on a rerun', () => {
+    const requested = 'install_0123456789abcdef0123456789abcdef';
+    const credentials = createManagedSetupCredentials(
+      'ingest-one',
+      undefined,
+      'i'.repeat(64),
+      requested,
+    );
+
+    expect(credentials.installationId).toBe(requested);
+    expect(
+      createManagedSetupCredentials(
+        'ingest-two',
+        credentials,
+        undefined,
+        requested,
+      ),
+    ).toMatchObject({ installationId: requested });
+    expect(() =>
+      createManagedSetupCredentials(
+        'ingest-three',
+        credentials,
+        undefined,
+        'install_fedcba9876543210fedcba9876543210',
+      ),
+    ).toThrow(/does not match/u);
+  });
+
+  it('accepts one valid installation ID option and rejects unsafe forms', () => {
+    const requested = 'install_0123456789abcdef0123456789abcdef';
+    expect(installationIdOption(undefined)).toBeUndefined();
+    expect(installationIdOption(['--installation-id', requested])).toBe(
+      requested,
+    );
+    expect(() => installationIdOption(['--installation-id'])).toThrow(
+      /requires a value/u,
+    );
+    expect(() =>
+      installationIdOption(['--installation-id', 'customer-vm-1']),
+    ).toThrow(/install_/u);
+    expect(() =>
+      installationIdOption([
+        '--installation-id',
+        requested,
+        '--installation-id',
+        requested,
+      ]),
+    ).toThrow(/only once/u);
   });
 
   it('rejects a configured installation identity that differs from owner-only setup state', () => {
@@ -312,6 +383,44 @@ describe('client setup command contract', () => {
     expect(environment).toEqual({ SAFE_VALUE: 'preserved' });
   });
 
+  it('pauses the terminal after reading a hidden ingestion key', async () => {
+    const listeners = new Set<(chunk: Buffer) => void>();
+    const rawModes: boolean[] = [];
+    const writes: string[] = [];
+    let paused = true;
+    const input = {
+      isTTY: true,
+      setRawMode(enabled: boolean) {
+        rawModes.push(enabled);
+      },
+      resume() {
+        paused = false;
+      },
+      pause() {
+        paused = true;
+      },
+      on(_event: 'data', listener: (chunk: Buffer) => void) {
+        listeners.add(listener);
+      },
+      off(_event: 'data', listener: (chunk: Buffer) => void) {
+        listeners.delete(listener);
+      },
+    };
+    const output = {
+      write(value: string) {
+        writes.push(value);
+      },
+    };
+
+    const answer = hiddenQuestion('Ingestion key (hidden): ', input, output);
+    for (const listener of listeners) listener(Buffer.from('ingest-secret\r'));
+
+    await expect(answer).resolves.toBe('ingest-secret');
+    expect(paused).toBe(true);
+    expect(rawModes).toEqual([true, false]);
+    expect(writes.join('')).not.toContain('ingest-secret');
+  });
+
   it('never passes setup secrets to an OpenClaw child process', async () => {
     const directory = await mkdtemp(
       join(tmpdir(), 'semantic-layer-openclaw-setup-'),
@@ -347,6 +456,125 @@ describe('client setup command contract', () => {
       restoreEnvironment('SEMANTIC_LAYER_INGEST_KEY', previous.ingest);
       restoreEnvironment('SEMANTIC_LAYER_IDENTITY_KEY', previous.identity);
       restoreEnvironment('SAFE_VALUE', previous.safe);
+    }
+  });
+
+  it('configures one fresh host with its assigned installation ID in one setup run', async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-setup-e2e-'),
+    );
+    temporaryDirectories.push(directory);
+    const executable = join(directory, 'openclaw-fixture');
+    const installationId = 'install_0123456789abcdef0123456789abcdef';
+    const endpoint = 'https://ingest.example.test';
+    const spoolDirectory = join(directory, 'semantic-layer', 'cloud-spool');
+    const openClawConfigPath = join(directory, 'openclaw.json');
+    const verifiedInstallationIds: string[] = [];
+    const latitudeEntry = {
+      enabled: true,
+      config: { projectId: 'latitude-project', environment: 'staging' },
+    };
+    await writeFile(
+      openClawConfigPath,
+      JSON.stringify({ plugins: { entries: { latitude: latitudeEntry } } }),
+    );
+    await writeFile(
+      executable,
+      [
+        '#!/usr/bin/env node',
+        "import { readFileSync, writeFileSync } from 'node:fs';",
+        "if (process.env.SEMANTIC_LAYER_INGEST_KEY || process.env.SEMANTIC_LAYER_IDENTITY_KEY) process.exit(23);",
+        'const args = process.argv.slice(2);',
+        'const merge = (left, right) => { for (const [key, value] of Object.entries(right)) { left[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(left[key] && typeof left[key] === "object" && !Array.isArray(left[key]) ? left[key] : {}, value) : value; } return left; };',
+        "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
+        `else if (args[0] === 'plugins' && args[1] === 'inspect') process.stdout.write(${JSON.stringify(JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] }))});`,
+        "else if (args[0] === 'security' && args[1] === 'audit') process.stdout.write(JSON.stringify({ summary: { critical: 0 } }));",
+        "else if (args[0] === 'config' && args[1] === 'patch' && !args.includes('--dry-run')) { const patchPath = args[args.indexOf('--file') + 1]; const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const patch = JSON.parse(readFileSync(patchPath, 'utf8')); writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(merge(current, patch))); }",
+        `else if (args[0] === 'config' && args[1] === 'get' && args[2] === 'gateway.bind') process.stdout.write('loopback\\n');`,
+        `else if (args[0] === 'config' && args[1] === 'get' && args[2].endsWith('.config.endpoint')) process.stdout.write(${JSON.stringify(JSON.stringify(endpoint))});`,
+        `else if (args[0] === 'config' && args[1] === 'get' && args[2].endsWith('.config.spoolDirectory')) process.stdout.write(${JSON.stringify(JSON.stringify(spoolDirectory))});`,
+        `else if (args[0] === 'config' && args[1] === 'get' && args[2].endsWith('.config.installationId')) process.stdout.write(${JSON.stringify(JSON.stringify(installationId))});`,
+        "else if (args[0] === 'config' && args[1] === 'get') process.stdout.write('true\\n');",
+        '',
+      ].join('\n'),
+    );
+    await chmod(executable, 0o700);
+
+    const previous = {
+      bin: process.env.OPENCLAW_BIN,
+      state: process.env.OPENCLAW_STATE_DIR,
+      config: process.env.OPENCLAW_CONFIG_PATH,
+      ingest: process.env.SEMANTIC_LAYER_INGEST_KEY,
+      identity: process.env.SEMANTIC_LAYER_IDENTITY_KEY,
+      fetch: globalThis.fetch,
+    };
+    process.env.OPENCLAW_BIN = executable;
+    process.env.OPENCLAW_STATE_DIR = directory;
+    process.env.OPENCLAW_CONFIG_PATH = openClawConfigPath;
+    process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
+    process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'i'.repeat(64);
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/health')) return new Response('{"status":"ok"}');
+      if (url.endsWith('/v1/auth/verify')) {
+        const body = JSON.parse(String(init?.body)) as {
+          installation_id?: string;
+        };
+        if (body.installation_id) {
+          verifiedInstallationIds.push(body.installation_id);
+        }
+        return new Response('{"status":"ok"}');
+      }
+      return new Response('{"error":"NOT_FOUND"}', { status: 404 });
+    };
+    try {
+      await expect(
+        main([
+          'setup',
+          '--endpoint',
+          endpoint,
+          '--service-name',
+          'customer-openclaw-vm-01',
+          '--installation-id',
+          installationId,
+        ]),
+      ).resolves.toBe(0);
+      const credentialPath = join(
+        directory,
+        'semantic-layer',
+        'credentials.json',
+      );
+      expect(JSON.parse(await readFile(credentialPath, 'utf8'))).toEqual({
+        ingestKey: 'ingest-secret',
+        identityKey: 'i'.repeat(64),
+        installationId,
+      });
+      expect((await lstat(credentialPath)).mode & 0o077).toBe(0);
+      expect(verifiedInstallationIds).toEqual([
+        installationId,
+        installationId,
+      ]);
+      const openClawConfig = JSON.parse(
+        await readFile(openClawConfigPath, 'utf8'),
+      ) as {
+        plugins: { entries: Record<string, unknown> };
+      };
+      expect(openClawConfig.plugins.entries.latitude).toEqual(latitudeEntry);
+      expect(openClawConfig.plugins.entries).toHaveProperty(
+        'semantic-layer-openclaw',
+      );
+      await expect(
+        lstat(
+          join(directory, 'semantic-layer', 'openclaw-config-patch.json'),
+        ),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      restoreEnvironment('OPENCLAW_BIN', previous.bin);
+      restoreEnvironment('OPENCLAW_STATE_DIR', previous.state);
+      restoreEnvironment('OPENCLAW_CONFIG_PATH', previous.config);
+      restoreEnvironment('SEMANTIC_LAYER_INGEST_KEY', previous.ingest);
+      restoreEnvironment('SEMANTIC_LAYER_IDENTITY_KEY', previous.identity);
+      globalThis.fetch = previous.fetch;
     }
   });
 });

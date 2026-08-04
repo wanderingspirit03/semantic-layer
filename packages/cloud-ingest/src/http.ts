@@ -67,6 +67,10 @@ export function createIngestServer(options: Options) {
       tenant = scope.tenant;
       installation = scope.installation;
       const url = new URL(request.url ?? '/', 'http://localhost');
+      if (request.method === 'POST' && url.pathname === '/v1/auth/verify') {
+        const body = await readJson(request, 1024); bytes = body.bytes;
+        status = verifyInstallation(scope, body.value, response); return;
+      }
       let match = /^\/v1\/bundles\/([^/]+)\/begin$/u.exec(url.pathname);
       if (request.method === 'POST' && match) {
         bundleId = decodeURIComponent(match[1]!);
@@ -118,6 +122,26 @@ export function createIngestServer(options: Options) {
     }
   });
   return { server, close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) };
+}
+
+function verifyInstallation(
+  scope: AuthScope,
+  value: unknown,
+  response: ServerResponse,
+): number {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new HttpError(400, 'INVALID_AUTH_VERIFY');
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 1 ||
+    typeof candidate.installation_id !== 'string' ||
+    !validInstallationId(candidate.installation_id)
+  ) {
+    throw new HttpError(400, 'INVALID_AUTH_VERIFY');
+  }
+  if (scope.legacy || candidate.installation_id !== scope.installation)
+    throw new HttpError(403, 'INSTALLATION_MISMATCH');
+  return send(response, 200, { status: 'ok' });
 }
 
 async function withBundleIngestLease<T>(

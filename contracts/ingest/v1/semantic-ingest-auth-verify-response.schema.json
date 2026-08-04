@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/ingest/v1/semantic-ingest-auth-verify-response.schema.json",
+  "title": "SemanticIngestAuthVerifyResponseV1",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": { "const": "ok" }
+  },
+  "additionalProperties": false
+}

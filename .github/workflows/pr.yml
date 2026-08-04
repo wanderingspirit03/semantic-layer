@@ -18,6 +18,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -26,7 +30,6 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
-      - run: corepack enable && corepack prepare pnpm@8.15.0 --activate
       - run: pnpm install --frozen-lockfile
       - name: Require advertised optional Python integrations
         run: |
@@ -47,18 +50,25 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
-      - run: corepack enable && corepack prepare pnpm@8.15.0 --activate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
       - run: pnpm install --filter './packages/**' --frozen-lockfile
+      - name: Build all TypeScript packages
+        run: pnpm -r --filter './packages/**' --if-present run build
       - name: Typecheck all TypeScript packages and capture compatibility suites
         run: |
           pnpm -r --filter './packages/**' --if-present run typecheck
           pnpm --filter semantic-layer-capture run typecheck:tests
-      - name: Build all TypeScript packages
-        run: pnpm -r --filter './packages/**' --if-present run build
       - name: Run core TypeScript tests
         run: |
           pnpm --filter semantic-layer-capture exec vitest run \
@@ -99,8 +109,7 @@ jobs:
           uv run --isolated \
             --python ${{ matrix.python-version }} \
             --project packages/python \
-            --with pytest \
-            --with pytest-asyncio \
+            --extra dev \
             pytest \
               packages/python/tests/unit/test_conformance.py \
               packages/python/tests/unit/test_context_propagation.py \

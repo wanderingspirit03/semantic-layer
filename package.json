@@ -13,7 +13,7 @@
     "contracts:check": "node contracts/trace/v1/validate-examples.mjs && node contracts/trace/v2/validate-contract.mjs && node scripts/cloud-integration.mjs contracts && pnpm --filter semantic-layer-capture run contracts:check && uv run --project packages/python --extra dev python packages/python/scripts/generate_capture_v1_models.py --check",
     "build": "pnpm -r --filter './packages/**' build && uv run --project packages/python --extra dev python -m build packages/python",
     "test:packages": "node --test scripts/package-content-scan.test.mjs && node scripts/package-smoke.mjs",
-    "verify": "pnpm contracts:check && pnpm lint && pnpm typecheck && pnpm test:all && pnpm build && pnpm test:e2e:local && pnpm test:packages",
+    "verify": "pnpm contracts:check && pnpm lint && pnpm build && pnpm typecheck && pnpm test:all && pnpm test:e2e:local && pnpm test:packages",
     "clean": "rm -rf node_modules packages/*/node_modules packages/*/dist"
   },
   "devDependencies": {

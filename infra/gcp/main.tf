@@ -144,8 +144,8 @@ resource "google_project_iam_custom_role" "ingest_metering" {
   project     = var.project_id
   role_id     = "semanticLayerIngestMetering${title(var.environment)}"
   title       = "Semantic Layer ingest metering (${var.environment})"
-  description = "Create, read, and conditionally update isolated admission ledgers."
-  permissions = ["storage.objects.create", "storage.objects.get", "storage.objects.update"]
+  description = "Create, read, and conditionally replace isolated admission ledgers."
+  permissions = ["storage.objects.create", "storage.objects.delete", "storage.objects.get", "storage.objects.update"]
 }
 
 resource "google_project_iam_audit_config" "storage_data_write" {
