@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/ingest/v1/semantic-ingest-complete-request.schema.json",
+  "title": "SemanticIngestCompleteRequestV1",
+  "type": "object",
+  "required": ["protocol_version", "bundle_digest"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "bundle_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of UTF-8 'semantic-layer-bundle-v1\\0', followed for each UTF-8-byte-sorted file by decimal path-byte-length, ':', exact path bytes, NUL, decimal size_bytes, NUL, lowercase file sha256, NUL. Canonical manifest(123,a*64), trace(456,b*64), blobs/z.bin(7,c*64) vector: 366eb97f10e3b44880407c6b0c61aceb5b3ba37b09b3d0840f0d80a6dee7883b."
+    }
+  },
+  "additionalProperties": false
+}

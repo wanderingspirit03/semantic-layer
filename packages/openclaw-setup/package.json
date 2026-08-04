@@ -1,0 +1,32 @@
+{
+  "name": "semantic-layer-openclaw-setup",
+  "version": "0.1.0-pilot.1",
+  "type": "module",
+  "description": "Client setup and doctor CLI for the Semantic Layer OpenClaw plugin",
+  "license": "MIT",
+  "bin": {
+    "semantic-layer-openclaw-setup": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./scripts/clean.mjs && tsc",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "semantic-layer-cloud": "0.1.0-pilot.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=22.14.0 <23 || >=24.0.0 <25 || >=25.9.0"
+  }
+}

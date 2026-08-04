@@ -1,0 +1,30 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_stream000000001",
+  "record_id": "record_stream0000001",
+  "seq": 2,
+  "observed_at": "2026-01-01T00:00:01.000Z",
+  "monotonic_ns": 2,
+  "trace_id": "trace_stream00000001",
+  "source": {
+    "source_id": "fixture.app/fixture-stream",
+    "name": "fixture-stream",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "stream",
+  "phase": "event",
+  "name": "fixture.text_delta",
+  "native": { "type": "text-delta", "delta": "synthetic" },
+  "semantic": { "stream_index": 0 },
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

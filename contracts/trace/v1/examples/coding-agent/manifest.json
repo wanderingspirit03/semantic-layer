@@ -1,0 +1,39 @@
+{
+  "schema": "semantic_trace_manifest_v1",
+  "record_schema": "semantic_trace_record_v1",
+  "bundle_id": "bundle_code_example",
+  "state": "sealed",
+  "sdk": {
+    "language": "typescript",
+    "version": "0.1.0-contract"
+  },
+  "privacy_mode": "local-rich",
+  "started_at": "2026-07-25T12:00:00.000Z",
+  "updated_at": "2026-07-25T12:00:01.120Z",
+  "sealed_at": "2026-07-25T12:00:01.120Z",
+  "sources": [
+    {
+      "id": "src_coding_agent",
+      "name": "custom-coding-agent",
+      "version": "example"
+    },
+    {
+      "id": "src_openai",
+      "name": "openai",
+      "version": "example"
+    }
+  ],
+  "trace": {
+    "path": "trace.jsonl",
+    "records": 14,
+    "last_seq": 14,
+    "bytes": 4099,
+    "losses": 0,
+    "sha256": "c38bbee4a5beb571f9c1afc1287aed9e8f222c931d521212e9b9aff3aef7a5e9"
+  },
+  "blobs": {
+    "path": "blobs",
+    "count": 0,
+    "bytes": 0
+  }
+}

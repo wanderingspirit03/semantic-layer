@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/trace/v1/semantic-trace-record.schema.json",
+  "title": "SemanticTraceRecordV1",
+  "type": "object",
+  "required": [
+    "id",
+    "seq",
+    "time",
+    "kind",
+    "origin",
+    "source",
+    "data"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/id" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "time": { "type": "string", "format": "date-time" },
+    "kind": {
+      "enum": [
+        "run.start",
+        "run.outcome",
+        "scope",
+        "message",
+        "model.request",
+        "model.response",
+        "tool.proposal",
+        "tool.call",
+        "tool.result",
+        "state",
+        "error",
+        "verification",
+        "loss"
+      ]
+    },
+    "origin": { "enum": ["observed", "context", "inferred"] },
+    "source": { "$ref": "#/$defs/id" },
+    "parent": { "$ref": "#/$defs/id" },
+    "data": { "$ref": "#/$defs/json_object" },
+    "links": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/link" }
+    },
+    "blob_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/blob_ref" },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "run.start" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/run_start_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "run.outcome" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/run_outcome_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "scope" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/scope_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "message" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/message_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "model.request" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/model_request_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "model.response" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/model_response_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "tool.proposal" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/tool_proposal_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "tool.call" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/tool_call_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "tool.result" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/tool_result_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "state" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/state_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "error" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/error_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "verification" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/verification_data" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "loss" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "data": { "$ref": "#/$defs/loss_data" } }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._:-]{2,127}$"
+    },
+    "short_string": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "json": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/json" }
+        },
+        { "$ref": "#/$defs/json_object" }
+      ]
+    },
+    "json_object": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/json" }
+    },
+    "link": {
+      "type": "object",
+      "required": ["type", "record"],
+      "properties": {
+        "type": {
+          "enum": [
+            "result_of",
+            "derived_from",
+            "verifies",
+            "affects",
+            "continues_from",
+            "branches_from"
+          ]
+        },
+        "record": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "blob_ref": {
+      "type": "object",
+      "required": ["path", "sha256", "bytes", "media_type", "scan"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^blobs/(?!\\.{1,2}(?:/|$))[a-zA-Z0-9._-]+(?:/(?!\\.{1,2}(?:/|$))[a-zA-Z0-9._-]+)*$",
+          "maxLength": 512
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "media_type": { "$ref": "#/$defs/short_string" },
+        "scan": { "const": "clean" },
+        "source_path": { "type": "string", "maxLength": 2048 }
+      },
+      "additionalProperties": false
+    },
+    "run_start_data": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/short_string" },
+        "input": { "$ref": "#/$defs/json" },
+        "conversation_id": { "$ref": "#/$defs/id" },
+        "turn_id": { "$ref": "#/$defs/id" },
+        "turn_index": { "type": "integer", "minimum": 0 },
+        "previous_turn_id": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "run_outcome_data": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["completed", "failed", "cancelled", "unknown"]
+        },
+        "summary": { "type": "string", "maxLength": 4096 },
+        "output": { "$ref": "#/$defs/json" },
+        "error": { "$ref": "#/$defs/error_data" }
+      },
+      "additionalProperties": false
+    },
+    "scope_data": {
+      "type": "object",
+      "required": ["scope_id", "type", "phase"],
+      "properties": {
+        "scope_id": { "$ref": "#/$defs/id" },
+        "type": { "enum": ["agent", "turn", "step"] },
+        "phase": { "enum": ["start", "end"] },
+        "name": { "$ref": "#/$defs/short_string" },
+        "status": {
+          "enum": ["completed", "failed", "cancelled", "interrupted", "unknown"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "message_data": {
+      "type": "object",
+      "required": ["role", "content"],
+      "properties": {
+        "role": {
+          "enum": ["system", "developer", "user", "assistant", "tool"]
+        },
+        "content": { "$ref": "#/$defs/json" },
+        "name": { "$ref": "#/$defs/short_string" },
+        "call_id": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+    "model_request_data": {
+      "type": "object",
+      "dependentRequired": {
+        "context_base_ref": ["context_refs"]
+      },
+      "properties": {
+        "model": { "$ref": "#/$defs/short_string" },
+        "context_base_ref": { "$ref": "#/$defs/id" },
+        "context_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "tools": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/short_string" },
+          "uniqueItems": true
+        },
+        "tool_definitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/json_object" }
+        },
+        "settings": {
+          "$ref": "#/$defs/json_object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "model_response_data": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["completed", "incomplete", "failed", "cancelled"] },
+        "model": { "$ref": "#/$defs/short_string" },
+        "content": { "$ref": "#/$defs/json" },
+        "reasoning": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reasoning_block" }
+        },
+        "finish_reason": { "$ref": "#/$defs/short_string" },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "input_tokens": { "type": "integer", "minimum": 0 },
+            "output_tokens": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "reasoning_block": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "enum": ["text", "summary"] },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "tool_proposal_data": {
+      "type": "object",
+      "required": ["name", "input"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "native_call_id": { "$ref": "#/$defs/short_string" },
+        "name": { "$ref": "#/$defs/short_string" },
+        "input": { "$ref": "#/$defs/json" }
+      },
+      "additionalProperties": false
+    },
+    "tool_call_data": {
+      "type": "object",
+      "required": ["call_id", "name", "input"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "native_call_id": { "$ref": "#/$defs/short_string" },
+        "name": { "$ref": "#/$defs/short_string" },
+        "input": { "$ref": "#/$defs/json" }
+      },
+      "additionalProperties": false
+    },
+    "tool_result_data": {
+      "type": "object",
+      "required": ["call_id", "status"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/id" },
+        "native_call_id": { "$ref": "#/$defs/short_string" },
+        "status": { "enum": ["succeeded", "failed", "cancelled"] },
+        "output": { "$ref": "#/$defs/json" },
+        "error": { "$ref": "#/$defs/error_data" }
+      },
+      "additionalProperties": false
+    },
+    "state_data": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{2,127}$"
+        },
+        "version": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "$ref": "#/$defs/short_string" }
+          ]
+        },
+        "value": { "$ref": "#/$defs/json" }
+      },
+      "additionalProperties": false
+    },
+    "error_data": {
+      "type": "object",
+      "required": ["type", "message", "recoverable"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{2,127}$"
+        },
+        "message": { "type": "string", "maxLength": 4096 },
+        "recoverable": { "type": "boolean" },
+        "code": { "$ref": "#/$defs/short_string" },
+        "details": { "$ref": "#/$defs/json" }
+      },
+      "additionalProperties": false
+    },
+    "verification_data": {
+      "type": "object",
+      "required": ["subject", "status"],
+      "properties": {
+        "subject": {
+          "enum": ["action", "goal", "delivery", "side_effect", "policy", "custom"]
+        },
+        "status": { "enum": ["passed", "failed", "unknown"] },
+        "summary": { "type": "string", "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    },
+    "loss_data": {
+      "type": "object",
+      "required": ["reason", "stage", "count", "recoverable"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{2,63}$"
+        },
+        "stage": {
+          "enum": ["source", "serialize", "scrub", "queue", "buffer", "persist", "recover"]
+        },
+        "count": { "type": "integer", "minimum": 1 },
+        "recoverable": { "type": "boolean" },
+        "path": { "type": "string", "maxLength": 2048 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "detail": { "type": "string", "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

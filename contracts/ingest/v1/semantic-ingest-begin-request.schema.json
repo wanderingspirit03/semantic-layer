@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/ingest/v1/semantic-ingest-begin-request.schema.json",
+  "title": "SemanticIngestBeginRequestV1",
+  "description": "Begins an immutable upload. The server additionally validates the manifest against Semantic Trace Manifest v1 or v2.",
+  "type": "object",
+  "required": ["protocol_version", "bundle_digest", "manifest", "files"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "bundle_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of UTF-8 'semantic-layer-bundle-v1\\0', followed for each UTF-8-byte-sorted file by decimal path-byte-length, ':', exact path bytes, NUL, decimal size_bytes, NUL, lowercase file sha256, NUL. Canonical manifest(123,a*64), trace(456,b*64), blobs/z.bin(7,c*64) vector: 366eb97f10e3b44880407c6b0c61aceb5b3ba37b09b3d0840f0d80a6dee7883b."
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["schema", "bundle_id", "state"],
+      "properties": {
+        "schema": {
+          "oneOf": [
+            { "const": "semantic_trace_manifest_v1" },
+            { "const": "semantic_trace_manifest_v2" }
+          ]
+        },
+        "bundle_id": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]{2,127}$" },
+        "state": { "const": "sealed" }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/file" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "file": {
+      "type": "object",
+      "required": ["file_id", "path", "size_bytes", "sha256", "parts"],
+      "properties": {
+        "file_id": { "$ref": "#/$defs/sha256" },
+        "path": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^(manifest\\.json|trace\\.jsonl|blobs/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._-]+)*)$"
+        },
+        "size_bytes": { "type": "integer", "minimum": 0, "maximum": 268435456 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "parts": { "type": "integer", "minimum": 0, "maximum": 32 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

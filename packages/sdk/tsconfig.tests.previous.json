@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "composite": false,
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "rootDir": ".",
+    "paths": {
+      "agents-current": ["node_modules/agents-previous"],
+      "agents-current/*": ["node_modules/agents-previous/*"],
+      "ai-current": ["node_modules/ai-previous"],
+      "ai-current/*": ["node_modules/ai-previous/*"],
+      "anthropic-current": ["node_modules/anthropic-previous"],
+      "anthropic-current/*": ["node_modules/anthropic-previous/*"],
+      "gemini-current": ["node_modules/gemini-previous"],
+      "gemini-current/*": ["node_modules/gemini-previous/*"],
+      "langgraph-current": ["node_modules/langgraph-previous"],
+      "langgraph-current/*": ["node_modules/langgraph-previous/*"],
+      "mastra-current": ["node_modules/mastra-previous"],
+      "mastra-current/*": ["node_modules/mastra-previous/*"],
+      "openai-current": ["node_modules/openai-previous"],
+      "openai-current/*": ["node_modules/openai-previous/*"],
+      "strands-current": ["node_modules/strands-previous"],
+      "strands-current/*": ["node_modules/strands-previous/*"]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

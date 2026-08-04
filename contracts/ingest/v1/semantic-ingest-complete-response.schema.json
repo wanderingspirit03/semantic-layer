@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/ingest/v1/semantic-ingest-complete-response.schema.json",
+  "title": "SemanticIngestCompleteResponseV1",
+  "type": "object",
+  "required": ["status", "bundle_digest"],
+  "properties": {
+    "status": { "const": "complete" },
+    "bundle_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

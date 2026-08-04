@@ -1,0 +1,31 @@
+{
+  "name": "@semantic-layer/cloud-ingest",
+  "version": "0.1.0-pilot.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/server.js",
+  "bin": {
+    "semantic-layer-ingest-ops": "./dist/ops.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "ops": "node dist/ops.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.16.0",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  }
+}

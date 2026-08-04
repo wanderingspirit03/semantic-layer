@@ -1,0 +1,17 @@
+**
+!tsconfig.base.json
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!contracts/
+!contracts/trace/
+!contracts/trace/v1/
+!contracts/trace/v1/*.json
+!contracts/trace/v2/
+!contracts/trace/v2/*.json
+!packages/
+!packages/cloud-ingest/
+!packages/cloud-ingest/package.json
+!packages/cloud-ingest/tsconfig.json
+!packages/cloud-ingest/src/
+!packages/cloud-ingest/src/**

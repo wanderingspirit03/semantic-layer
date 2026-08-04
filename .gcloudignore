@@ -1,0 +1,29 @@
+# Cloud Build receives only the files required by packages/cloud-ingest/Dockerfile.
+# Keep this as a strict allowlist: the repository can contain private local data.
+**
+
+!.gcloudignore
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+
+!contracts/
+!contracts/trace/
+!contracts/trace/v1/
+!contracts/trace/v1/semantic-trace-manifest.schema.json
+!contracts/trace/v1/semantic-trace-record.schema.json
+!contracts/trace/v2/
+!contracts/trace/v2/semantic-trace-manifest.schema.json
+
+!infra/
+!infra/gcp/
+!infra/gcp/cloudbuild.yaml
+
+!packages/
+!packages/cloud-ingest/
+!packages/cloud-ingest/Dockerfile
+!packages/cloud-ingest/package.json
+!packages/cloud-ingest/tsconfig.json
+!packages/cloud-ingest/src/
+!packages/cloud-ingest/src/**

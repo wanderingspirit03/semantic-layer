@@ -1,0 +1,35 @@
+{
+  "name": "semantic-layer",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local-first semantic tracing SDK for TypeScript and Python agent systems",
+  "scripts": {
+    "test": "pnpm -r --filter './packages/**' --if-present run test",
+    "test:python": "uv run --project packages/python --all-extras pytest packages/python/tests",
+    "test:all": "pnpm test && pnpm test:python",
+    "test:e2e:local": "node scripts/cloud-integration.mjs e2e",
+    "lint": "pnpm exec eslint . && uv run --project packages/python --extra dev ruff check packages/python",
+    "typecheck": "pnpm -r --filter './packages/**' --if-present run typecheck && pnpm --filter semantic-layer-capture run typecheck:tests && uv run --isolated --project packages/python --extra dev mypy --config-file packages/python/pyproject.toml packages/python/semantic_layer",
+    "contracts:check": "node contracts/trace/v1/validate-examples.mjs && node contracts/trace/v2/validate-contract.mjs && node scripts/cloud-integration.mjs contracts && pnpm --filter semantic-layer-capture run contracts:check && uv run --project packages/python --extra dev python packages/python/scripts/generate_capture_v1_models.py --check",
+    "build": "pnpm -r --filter './packages/**' build && uv run --project packages/python --extra dev python -m build packages/python",
+    "test:packages": "node --test scripts/package-content-scan.test.mjs && node scripts/package-smoke.mjs",
+    "verify": "pnpm contracts:check && pnpm lint && pnpm typecheck && pnpm test:all && pnpm build && pnpm test:e2e:local && pnpm test:packages",
+    "clean": "rm -rf node_modules packages/*/node_modules packages/*/dist"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "eslint": "^8.56.0",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0",
+    "zod": "4.4.3"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.0"
+}

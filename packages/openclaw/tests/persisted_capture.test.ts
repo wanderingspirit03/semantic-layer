@@ -1,0 +1,378 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createCapture, validateArtifact } from 'semantic-layer-capture';
+import { describe, expect, it } from 'vitest';
+import { createPluginDefinition } from '../src/plugin.js';
+
+type Handler = (
+  event: Record<string, unknown>,
+  context: Record<string, unknown>,
+) => unknown;
+
+describe('persisted OpenClaw capture', () => {
+  it('seals a valid bundle with exact tool/scope pairs and native-only opaque reasoning evidence', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-'));
+    let artifactPath = '';
+    const handlers: Partial<Record<string, Handler>> = {};
+    try {
+      const plugin = createPluginDefinition(
+        {
+          createRunCapture: createCapture,
+          createUploader: () => ({
+            async enqueueArtifact(path: string) {
+              artifactPath = path;
+              return {
+                bundleId: 'bundle',
+                bundleDigest: 'digest',
+                state: 'pending' as const,
+              };
+            },
+            async flush() {
+              return { timedOut: false, uploadedBundles: 0 };
+            },
+            status() {
+              return { lifecycle: 'running', pressure: 'ok' };
+            },
+            async shutdown() {},
+          }),
+        },
+        { terminalGraceMs: 0 },
+      );
+      plugin.register({
+        pluginConfig: {
+          endpoint: 'https://ingest.example.test',
+          ingestKey: 'ingest-secret-value',
+          identityKey: 'identity-secret-value-which-is-long-enough',
+          installationId: 'install_0123456789abcdef0123456789abcdef',
+          serviceName: 'openclaw-integration',
+          outputDirectory: output,
+        },
+        on(name, handler) {
+          handlers[name] = handler as Handler;
+        },
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        runtime: { version: '2026.5.5' },
+      });
+
+      const context = {
+        runId: 'parent-run',
+        sessionId: 'customer-session',
+        sessionKey: 'agent:main:parent-session',
+      };
+      handlers.before_model_resolve!({ prompt: 'hello' }, context);
+      handlers.model_call_started!(
+        {
+          runId: 'parent-run',
+          callId: 'model-1',
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-chat-v3-0324',
+          sessionId: 'customer-session',
+        },
+        context,
+      );
+      handlers.llm_input!(
+        {
+          runId: 'parent-run',
+          sessionId: 'customer-session',
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-chat-v3-0324',
+          prompt: 'hello',
+          historyMessages: [],
+          imagesCount: 0,
+        },
+        context,
+      );
+      handlers.before_tool_call!(
+        {
+          runId: 'parent-run',
+          toolCallId: 'tool-1',
+          toolName: 'lookup',
+          params: { query: 'safe' },
+        },
+        { ...context, toolCallId: 'tool-1', toolName: 'lookup' },
+      );
+      handlers.after_tool_call!(
+        {
+          runId: 'parent-run',
+          toolCallId: 'tool-1',
+          toolName: 'lookup',
+          params: { query: 'safe' },
+          result: { answer: 42 },
+        },
+        { ...context, toolCallId: 'tool-1', toolName: 'lookup' },
+      );
+      const subagentContext = {
+        runId: 'child-run',
+        childSessionKey: 'agent:researcher:child-session',
+        requesterSessionKey: context.sessionKey,
+      };
+      handlers.subagent_spawned!(
+        {
+          runId: 'child-run',
+          childSessionKey: subagentContext.childSessionKey,
+          agentId: 'researcher',
+          mode: 'run',
+          threadRequested: false,
+        },
+        subagentContext,
+      );
+      handlers.subagent_ended!(
+        {
+          runId: 'child-run',
+          targetSessionKey: subagentContext.childSessionKey,
+          targetKind: 'subagent',
+          reason: 'done',
+          outcome: 'ok',
+        },
+        subagentContext,
+      );
+      handlers.model_call_ended!(
+        {
+          runId: 'parent-run',
+          callId: 'model-1',
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-chat-v3-0324',
+          outcome: 'completed',
+          durationMs: 12,
+        },
+        context,
+      );
+      handlers.before_message_write!(
+        {
+          sessionKey: context.sessionKey,
+          message: {
+            role: 'assistant',
+            provider: 'openrouter',
+            model: 'deepseek/deepseek-chat-v3-0324',
+            responseId: 'provider-response-1',
+            stopReason: 'stop',
+            usage: { input: 10, output: 20, totalTokens: 30 },
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'EXPOSED_MODEL_REASONING',
+                thinkingSignature: 'PRIVATE_THINKING_SIGNATURE',
+                encryptedReasoning: 'PRIVATE_ENCRYPTED_REASONING',
+                encryptedContent: 'ingest-secret-value',
+              },
+              { type: 'summary', text: 'Checked the lookup result.' },
+              {
+                type: 'thinking',
+                text: 'PRIVATE_REDACTED_REASONING',
+                redacted: true,
+              },
+              {
+                type: 'toolCall',
+                arguments: { thinking: 'PRIVATE_TOOL_ARGUMENT' },
+              },
+              { type: 'text', text: 'answer' },
+            ],
+          },
+        },
+        { sessionKey: context.sessionKey },
+      );
+      handlers.llm_output!(
+        {
+          runId: 'parent-run',
+          sessionId: 'customer-session',
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-chat-v3-0324',
+          responseId: 'provider-response-1',
+          assistantTexts: ['answer'],
+          lastAssistant: {
+            responseId: 'provider-response-1',
+            reasoning: [
+              {
+                type: 'thinking',
+                text: 'EXPOSED_MODEL_REASONING',
+                thinkingSignature: 'PRIVATE_MODEL_SIGNATURE',
+              },
+              { type: 'summary', text: 'Checked the lookup result.' },
+            ],
+          },
+        },
+        context,
+      );
+      await handlers.agent_end!(
+        {
+          runId: 'parent-run',
+          success: true,
+          messages: [
+            {
+              role: 'assistant',
+              responseId: 'provider-response-1',
+              content: [
+                {
+                  type: 'thinking',
+                  thinking: 'EXPOSED_MODEL_REASONING',
+                  thinkingSignature: 'PRIVATE_THINKING_SIGNATURE',
+                },
+                { type: 'text', text: 'answer' },
+              ],
+            },
+          ],
+        },
+        context,
+      );
+
+      expect(artifactPath).not.toBe('');
+      const validation = await validateArtifact(artifactPath, {
+        profile: 'structural',
+      });
+      expect(validation.valid, validation.issues.join('\n')).toBe(true);
+      const manifest = JSON.parse(
+        await readFile(join(artifactPath, 'manifest.json'), 'utf8'),
+      );
+      expect(manifest).toMatchObject({
+        schema: 'semantic_trace_manifest_v2',
+        installation_id: 'install_0123456789abcdef0123456789abcdef',
+        sources: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'openclaw',
+            version: '2026.5.5',
+            qualification: {
+              status: 'exact_qualified',
+              profile: 'openclaw.plugin.typed-hooks',
+            },
+          }),
+        ]),
+      });
+      const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
+      const records = trace
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(records.some((record) => record.kind === 'tool.call')).toBe(true);
+      expect(records.some((record) => record.kind === 'tool.result')).toBe(
+        true,
+      );
+      expect(records.filter((record) => record.kind === 'scope')).toHaveLength(
+        2,
+      );
+      expect(trace).toContain(
+        'This OpenClaw llm_input hook did not expose resolved tool definitions.',
+      );
+      expect(trace).toContain('before_agent_run');
+      expect(trace).toContain('did not expose a finish reason');
+      expect(trace).toContain('Checked the lookup result.');
+      const response = records.find(
+        (record) => record.kind === 'model.response',
+      );
+      expect(
+        (response?.data as Record<string, unknown>)?.reasoning,
+      ).toBeUndefined();
+      const assistantMessage = records.find(
+        (record) =>
+          record.kind === 'state' &&
+          (record.data as Record<string, unknown>)?.type ===
+            'openclaw.assistant_message',
+      );
+      expect(
+        (assistantMessage?.data as Record<string, unknown>)?.value,
+      ).toMatchObject({
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-chat-v3-0324',
+        response_id: 'provider-response-1',
+        stop_reason: 'stop',
+        reasoning: [
+          { type: 'text', text: 'EXPOSED_MODEL_REASONING' },
+          { type: 'summary', text: 'Checked the lookup result.' },
+        ],
+        usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+      });
+      expect(trace).toContain('EXPOSED_MODEL_REASONING');
+      expect(trace.match(/EXPOSED_MODEL_REASONING/gu)).toHaveLength(1);
+      expect(trace).not.toContain('PRIVATE_MODEL_SIGNATURE');
+      expect(trace).not.toContain('PRIVATE_THINKING_SIGNATURE');
+      expect(trace).not.toContain('PRIVATE_ENCRYPTED_REASONING');
+      expect(trace).toContain('credential_redaction');
+      expect(
+        JSON.stringify(
+          (
+            (assistantMessage?.data as Record<string, unknown>)
+              ?.value as Record<string, unknown>
+          )?.reasoning,
+        ),
+      ).not.toContain('PRIVATE_THINKING_SIGNATURE');
+      expect(trace).not.toContain('PRIVATE_REDACTED_REASONING');
+      expect(trace).not.toContain('PRIVATE_TOOL_ARGUMENT');
+      expect(trace).not.toContain('customer-session');
+      expect(trace).not.toContain('agent:main:parent-session');
+      expect(trace).not.toContain('agent:researcher:child-session');
+      expect(trace).not.toContain('identity-secret-value');
+      expect(trace).not.toContain('ingest-secret-value');
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
+  it('seals when OpenClaw exposes the same native run and session identity', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-shared-id-'));
+    let artifactPath = '';
+    const handlers: Partial<Record<string, Handler>> = {};
+    try {
+      const plugin = createPluginDefinition(
+        {
+          createRunCapture: createCapture,
+          createUploader: () => ({
+            async enqueueArtifact(path: string) {
+              artifactPath = path;
+              return {
+                bundleId: 'bundle',
+                bundleDigest: 'digest',
+                state: 'pending' as const,
+              };
+            },
+            async flush() {
+              return { timedOut: false, uploadedBundles: 0 };
+            },
+            status() {
+              return { lifecycle: 'running', pressure: 'ok' };
+            },
+            async shutdown() {},
+          }),
+        },
+        { terminalGraceMs: 0 },
+      );
+      plugin.register({
+        pluginConfig: {
+          endpoint: 'https://ingest.example.test',
+          ingestKey: 'ingest-secret-value',
+          identityKey: 'identity-secret-value-which-is-long-enough',
+          installationId: 'install_0123456789abcdef0123456789abcdef',
+          serviceName: 'openclaw-shared-native-identity',
+          outputDirectory: output,
+        },
+        on(name, handler) {
+          handlers[name] = handler as Handler;
+        },
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        runtime: { version: '2026.5.5' },
+      });
+
+      const context = {
+        runId: 'shared-native-run-session-id',
+        sessionId: 'shared-native-run-session-id',
+        sessionKey: 'agent:main:shared-native-session',
+      };
+      handlers.before_model_resolve!({ prompt: 'hello' }, context);
+      await handlers.agent_end!(
+        { runId: context.runId, success: true, messages: [] },
+        context,
+      );
+
+      expect(artifactPath).not.toBe('');
+      const validation = await validateArtifact(artifactPath, {
+        profile: 'structural',
+      });
+      expect(validation.valid, validation.issues.join('\n')).toBe(true);
+      const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
+      expect(trace).toContain('shared-native-run-session-id');
+      expect(trace).not.toContain('agent:main:shared-native-session');
+      expect(trace).not.toContain('scrubber_failure_payload_omitted');
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+});

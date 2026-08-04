@@ -1,0 +1,41 @@
+{
+  "schema": "semantic_trace_manifest_v2",
+  "record_schema": "semantic_trace_record_v1",
+  "bundle_id": "bundle_managed_fixture",
+  "installation_id": "install_0123456789abcdef0123456789abcdef",
+  "state": "sealed",
+  "sdk": {
+    "language": "typescript",
+    "version": "0.0.1"
+  },
+  "privacy_mode": "local-rich",
+  "capture_policy": "rich-credential-scrubbed",
+  "started_at": "2026-08-02T10:00:00.000Z",
+  "updated_at": "2026-08-02T10:01:00.000Z",
+  "sealed_at": "2026-08-02T10:01:00.000Z",
+  "sources": [
+    {
+      "id": "src_openclaw",
+      "name": "openclaw",
+      "version": "2026.5.5",
+      "seam": "plugin-hooks",
+      "qualification": {
+        "status": "exact_qualified",
+        "profile": "openclaw-2026.5.5"
+      }
+    }
+  ],
+  "trace": {
+    "path": "trace.jsonl",
+    "records": 1,
+    "last_seq": 1,
+    "bytes": 256,
+    "losses": 0,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "blobs": {
+    "path": "blobs",
+    "count": 0,
+    "bytes": 0
+  }
+}

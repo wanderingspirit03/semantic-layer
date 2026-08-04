@@ -1,0 +1,30 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_tool0000000001",
+  "record_id": "record_tool000000001",
+  "seq": 3,
+  "observed_at": "2026-01-01T00:00:02.000Z",
+  "monotonic_ns": 3,
+  "trace_id": "trace_tool000000001",
+  "source": {
+    "source_id": "fixture.app/fixture-tool",
+    "name": "fixture-tool",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "tool",
+  "phase": "start",
+  "name": "fixture.lookup",
+  "native": { "arguments": { "query": "synthetic" } },
+  "semantic": { "operation": "lookup" },
+  "correlation": { "parent_record_id": "record_parent0000001" },
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "python",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

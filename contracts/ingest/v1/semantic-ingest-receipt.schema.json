@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/ingest/v1/semantic-ingest-receipt.schema.json",
+  "title": "SemanticCloudLocalReceiptV1",
+  "description": "Client-local acknowledgement receipt stored beside, never inside, an acknowledged sealed bundle. This is not an HTTP response body.",
+  "type": "object",
+  "required": ["protocol_version", "bundle_id", "bundle_digest", "status", "acknowledged_at"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "bundle_id": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]{2,127}$" },
+    "bundle_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "status": { "const": "acknowledged" },
+    "acknowledged_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

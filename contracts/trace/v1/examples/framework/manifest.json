@@ -1,0 +1,39 @@
+{
+  "schema": "semantic_trace_manifest_v1",
+  "record_schema": "semantic_trace_record_v1",
+  "bundle_id": "bundle_framework_example",
+  "state": "sealed",
+  "sdk": {
+    "language": "typescript",
+    "version": "0.1.0-contract"
+  },
+  "privacy_mode": "local-rich",
+  "started_at": "2026-07-25T13:00:00.000Z",
+  "updated_at": "2026-07-25T13:00:00.400Z",
+  "sealed_at": "2026-07-25T13:00:00.400Z",
+  "sources": [
+    {
+      "id": "src_langgraph",
+      "name": "langgraph",
+      "version": "1.2.2"
+    },
+    {
+      "id": "src_openai",
+      "name": "openai",
+      "version": "example"
+    }
+  ],
+  "trace": {
+    "path": "trace.jsonl",
+    "records": 18,
+    "last_seq": 18,
+    "bytes": 4708,
+    "losses": 1,
+    "sha256": "4ac5d869d65e2ab368a083d692f8cf51ee5cf04c2b2d78fc5b8217819d0bd80b"
+  },
+  "blobs": {
+    "path": "blobs",
+    "count": 0,
+    "bytes": 0
+  }
+}

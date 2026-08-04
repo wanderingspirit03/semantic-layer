@@ -1,0 +1,41 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_ambiguous000001",
+  "record_id": "record_ambiguous001",
+  "seq": 3,
+  "observed_at": "2026-01-01T00:00:00.002Z",
+  "monotonic_ns": 3,
+  "trace_id": "trace_ambiguous0001",
+  "source": {
+    "source_id": "builtin/semantic-layer-runtime",
+    "name": "semantic-layer-runtime",
+    "seam": "coverage-ownership-finalization",
+    "identity_domain": "semantic-layer.coverage",
+    "official": true
+  },
+  "coverage": {
+    "operation": "model-call",
+    "domain": "fixture.model",
+    "identity_token": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "event_kind": "correlation",
+  "phase": "event",
+  "name": "semantic_layer.coverage.ownership",
+  "native": null,
+  "semantic": {
+    "type": "coverage.ownership.v1",
+    "status": "ambiguous",
+    "participant_source_ids": ["official/deep-a", "official/deep-b"],
+    "secondary_source_ids": [],
+    "final": true
+  },
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

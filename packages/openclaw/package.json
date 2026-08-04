@@ -1,0 +1,69 @@
+{
+  "name": "semantic-layer-openclaw",
+  "version": "0.1.0-pilot.1",
+  "type": "module",
+  "description": "OpenClaw semantic trace capture and durable cloud upload plugin",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./scripts/clean.mjs && tsc",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.qualification.json"
+  },
+  "dependencies": {
+    "semantic-layer-capture": "0.2.0-beta.0",
+    "semantic-layer-cloud": "0.1.0-pilot.1"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.5 || 2026.7.1-1 || 2026.7.1-2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "openclaw": "2026.5.5",
+    "openclaw-qualified-current": "npm:openclaw@2026.7.1-2",
+    "semantic-layer-capture": "0.2.0-beta.0",
+    "semantic-layer-cloud": "0.1.0-pilot.1",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=22.14.0 <23 || >=24.0.0 <25 || >=25.9.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.5",
+      "minGatewayVersion": "2026.5.5"
+    },
+    "build": {
+      "openclawVersion": "2026.5.5",
+      "pluginSdkVersion": "2026.5.5",
+      "qualifiedHostVersions": [
+        "2026.5.5",
+        "2026.7.1-2"
+      ]
+    },
+    "install": {
+      "minHostVersion": ">=2026.5.5"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_unknown0000001",
+  "record_id": "record_unknown000001",
+  "seq": 9,
+  "observed_at": "2026-01-01T00:00:08.000Z",
+  "monotonic_ns": 9,
+  "trace_id": "trace_unknown000001",
+  "source": {
+    "source_id": "fixture.app/fixture-future-framework",
+    "name": "fixture-future-framework",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "unknown",
+  "phase": "event",
+  "name": "fixture.future_event",
+  "native": { "future_field": true },
+  "semantic": {},
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  },
+  "future_extension": { "preserved": true }
+}

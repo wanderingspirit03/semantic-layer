@@ -1,0 +1,103 @@
+[project]
+name = "semantic-layer-capture"
+version = "0.2.0b0"
+description = "Local semantic trace capture for Python agent systems"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Semantic Layer Contributors" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "jsonschema[format]>=4.23,<5",
+    "pydantic>=2.7,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/wanderingspirit03/semantic-layer"
+Documentation = "https://github.com/wanderingspirit03/semantic-layer/tree/main/docs/sdk"
+Repository = "https://github.com/wanderingspirit03/semantic-layer.git"
+Issues = "https://github.com/wanderingspirit03/semantic-layer/issues"
+
+[project.optional-dependencies]
+dev = [
+    "anthropic==0.116.0",
+    "build>=1.2",
+    "google-genai==2.11.0",
+    "google-adk==2.4.0",
+    "langgraph==1.2.9",
+    "mypy>=1.10",
+    "openai==2.45.0",
+    "openai-agents==0.18.2",
+    "pydantic-ai==2.9.0",
+    "strands-agents==1.47.0",
+    "opentelemetry-sdk==1.42.1",
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "types-jsonschema>=4.23",
+]
+crewai = ["crewai==1.15.2"]
+microsoft-agent-framework = ["agent-framework==1.11.0"]
+llamaindex = ["llama-index-core==0.14.23"]
+haystack-otel = ["haystack-ai==2.31.0", "opentelemetry-sdk==1.42.1"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["semantic_layer"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+    "/semantic_layer",
+]
+exclude = [
+    "/dist",
+    "/scripts",
+    "/tests",
+    "/uv.lock",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+packages = ["semantic_layer"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+"scripts/generate_capture_v1_models.py" = ["E501"]
+"semantic_layer/_generated/*" = ["E501", "I001"]

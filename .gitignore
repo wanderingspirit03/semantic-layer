@@ -1,0 +1,19 @@
+.env
+.DS_Store
+node_modules/
+packages/*/dist/
+packages/*/tsconfig.tsbuildinfo
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.venv/
+coverage/
+**/.terraform/
+
+# Local agent/runtime state.
+.claude/
+.semantic-layer/

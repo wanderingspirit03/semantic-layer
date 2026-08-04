@@ -1,0 +1,30 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_success00000001",
+  "record_id": "record_success000001",
+  "seq": 1,
+  "observed_at": "2026-01-01T00:00:00.000Z",
+  "monotonic_ns": 1,
+  "trace_id": "trace_success0000001",
+  "source": {
+    "source_id": "builtin/manual",
+    "name": "manual",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "lifecycle",
+  "phase": "end",
+  "name": "fixture.success",
+  "native": { "result": "synthetic-ok" },
+  "semantic": { "status": "ok" },
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

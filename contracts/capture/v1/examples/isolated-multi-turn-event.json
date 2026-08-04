@@ -1,0 +1,34 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_multiturn000001",
+  "record_id": "record_multiturn0001",
+  "seq": 8,
+  "observed_at": "2026-01-01T00:00:07.000Z",
+  "monotonic_ns": 8,
+  "trace_id": "trace_multiturn00001",
+  "conversation_id": "conversation_fixture01",
+  "turn_id": "turn_fixture00000002",
+  "turn_index": 1,
+  "previous_turn_id": "turn_fixture00000001",
+  "source": {
+    "source_id": "builtin/manual",
+    "name": "manual",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "lifecycle",
+  "phase": "start",
+  "name": "fixture.turn",
+  "native": { "input": "synthetic follow-up" },
+  "semantic": { "turn_shape": "per-turn-root" },
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

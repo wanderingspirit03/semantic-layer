@@ -1,0 +1,1548 @@
+{
+  "schema": "semantic_projection_cases_v1",
+  "defaults": {
+    "schema": "semantic_capture_event_v1",
+    "run_id": "run_fixture",
+    "seq": 1,
+    "observed_at": "2026-07-28T00:00:00.000Z",
+    "monotonic_ns": 1,
+    "trace_id": "trace_fixture",
+    "source": {
+      "source_id": "official/example-framework",
+      "name": "example-framework",
+      "seam": "fixture.callback",
+      "identity_domain": "fixture.operation",
+      "official": true
+    },
+    "native": null,
+    "semantic": {},
+    "correlation": {},
+    "loss_refs": [],
+    "blob_refs": [],
+    "provenance": {
+      "language": "typescript",
+      "sdk_name": "semantic-layer-capture",
+      "sdk_version": "fixture",
+      "capture_policy": "rich_local_credential_scrubbed"
+    }
+  },
+  "cases": [
+    {
+      "name": "exact result and delivered-output references",
+      "events": [
+        {
+          "record_id": "rec_root_start",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "fixture run"
+          }
+        },
+        {
+          "record_id": "rec_context",
+          "event_kind": "log",
+          "phase": "event",
+          "name": "fixture.message",
+          "semantic": {
+            "type": "message",
+            "role": "user",
+            "content": {
+              "text": "Find the weather."
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_model_request",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "fixture.model",
+          "native_identity": "model-1",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model",
+            "context_refs": [
+              "rec_context"
+            ],
+            "tools": [
+              "get_weather"
+            ],
+            "tool_definitions": [
+              {
+                "name": "get_weather",
+                "description": "Read the weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "settings": {
+              "temperature": 0,
+              "max_output_tokens": 128
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_model_response",
+          "event_kind": "model",
+          "phase": "end",
+          "name": "fixture.model",
+          "native_identity": "model-1",
+          "semantic": {
+            "type": "model.response",
+            "status": "completed",
+            "content": {
+              "text": "I will check."
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_model_request"
+          }
+        },
+        {
+          "record_id": "rec_tool_proposal",
+          "event_kind": "tool",
+          "phase": "event",
+          "name": "get_weather",
+          "native_identity": "call-1",
+          "semantic": {
+            "type": "tool.proposal",
+            "name": "get_weather",
+            "input": {
+              "city": "London"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_tool_call",
+          "event_kind": "tool",
+          "phase": "start",
+          "name": "get_weather",
+          "native_identity": "call-1",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "get_weather",
+            "input": {
+              "city": "London"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_tool_result",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "get_weather",
+          "native_identity": "call-1",
+          "semantic": {
+            "type": "tool.result",
+            "status": "succeeded",
+            "output": {
+              "temperature_c": 21
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_call"
+          }
+        },
+        {
+          "record_id": "rec_state",
+          "event_kind": "state",
+          "phase": "event",
+          "name": "fixture.state",
+          "semantic": {
+            "type": "state.transition",
+            "state_type": "state.weather_loaded",
+            "result_ref": "rec_tool_result"
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_root_outcome",
+          "event_kind": "lifecycle",
+          "phase": "end",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "status": "succeeded",
+            "output_ref": "rec_model_response"
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_root_start",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "fixture run"
+          }
+        },
+        {
+          "id": "rec_context",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "message",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "role": "user",
+            "content": {
+              "text": "Find the weather."
+            }
+          }
+        },
+        {
+          "id": "rec_model_request",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "model": "fixture-model",
+            "context_refs": [
+              "rec_context"
+            ],
+            "tools": [
+              "get_weather"
+            ],
+            "tool_definitions": [
+              {
+                "name": "get_weather",
+                "description": "Read the weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "settings": {
+              "temperature": 0,
+              "max_output_tokens": 128
+            }
+          }
+        },
+        {
+          "id": "rec_model_response",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.response",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "status": "completed",
+            "content": {
+              "text": "I will check."
+            }
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_model_request"
+            }
+          ]
+        },
+        {
+          "id": "rec_tool_proposal",
+          "seq": 5,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.proposal",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "call-1",
+            "name": "get_weather",
+            "input": {
+              "city": "London"
+            }
+          }
+        },
+        {
+          "id": "rec_tool_call",
+          "seq": 6,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.call",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "call-1",
+            "name": "get_weather",
+            "input": {
+              "city": "London"
+            }
+          },
+          "links": [
+            {
+              "type": "derived_from",
+              "record": "rec_tool_proposal"
+            }
+          ]
+        },
+        {
+          "id": "rec_tool_result",
+          "seq": 7,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.result",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "call-1",
+            "status": "succeeded",
+            "output": {
+              "temperature_c": 21
+            }
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_tool_call"
+            }
+          ]
+        },
+        {
+          "id": "rec_state",
+          "seq": 8,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "state",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "type": "state.weather_loaded"
+          },
+          "links": [
+            {
+              "type": "derived_from",
+              "record": "rec_tool_result"
+            }
+          ]
+        },
+        {
+          "id": "rec_root_outcome",
+          "seq": 9,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.outcome",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "status": "completed"
+          },
+          "links": [
+            {
+              "type": "derived_from",
+              "record": "rec_model_response"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "context presence and invalid exact references",
+      "events": [
+        {
+          "record_id": "rec_root_unknown",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "reference validation"
+          }
+        },
+        {
+          "record_id": "rec_request_unknown_context",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "fixture.model",
+          "native_identity": "model-unknown",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model"
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_unknown"
+          }
+        },
+        {
+          "record_id": "rec_request_empty_context",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "fixture.model",
+          "native_identity": "model-empty",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model",
+            "context_refs": []
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_unknown"
+          }
+        },
+        {
+          "record_id": "rec_request_unexpandable_context",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "fixture.model",
+          "native_identity": "model-unexpandable",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model",
+            "context_base_ref": "rec_request_unknown_context",
+            "context_refs": []
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_unknown"
+          }
+        },
+        {
+          "record_id": "rec_request_appended_context",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "fixture.model",
+          "native_identity": "model-appended",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model",
+            "context_base_ref": "rec_request_empty_context",
+            "context_refs": []
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_unknown"
+          }
+        },
+        {
+          "record_id": "rec_state_invalid",
+          "event_kind": "state",
+          "phase": "event",
+          "name": "fixture.state",
+          "semantic": {
+            "type": "state.transition",
+            "state_type": "state.invalid_result_ref",
+            "result_ref": "rec_root_unknown"
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_unknown"
+          }
+        },
+        {
+          "record_id": "rec_outcome_invalid",
+          "event_kind": "lifecycle",
+          "phase": "end",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "status": "succeeded",
+            "output_ref": "rec_root_unknown"
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_unknown"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_root_unknown",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "reference validation"
+          }
+        },
+        {
+          "id": "rec_request_unknown_context",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "model": "fixture-model"
+          }
+        },
+        {
+          "id": "rec_request_empty_context",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "model": "fixture-model",
+            "context_refs": []
+          }
+        },
+        {
+          "id": "rec_request_unexpandable_context",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "model": "fixture-model"
+          }
+        },
+        {
+          "id": "__generated_record_1__",
+          "seq": 5,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "reason": "unresolved_context_base_ref",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "The context base did not resolve to an earlier expandable model request under the same run root, so the context suffix was omitted."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_request_unexpandable_context"
+            }
+          ]
+        },
+        {
+          "id": "rec_request_appended_context",
+          "seq": 6,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "model": "fixture-model",
+            "context_base_ref": "rec_request_empty_context",
+            "context_refs": []
+          }
+        },
+        {
+          "id": "rec_state_invalid",
+          "seq": 7,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "state",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "type": "state.invalid_result_ref"
+          }
+        },
+        {
+          "id": "__generated_record_2__",
+          "seq": 8,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "reason": "unresolved_result_ref",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "The result reference did not resolve to an earlier model.response or tool.result record."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_state_invalid"
+            }
+          ]
+        },
+        {
+          "id": "rec_outcome_invalid",
+          "seq": 9,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.outcome",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "status": "completed"
+          }
+        },
+        {
+          "id": "__generated_record_3__",
+          "seq": 10,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_unknown",
+          "data": {
+            "reason": "unresolved_output_ref",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "The output reference did not resolve to earlier deliverable evidence."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_outcome_invalid"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "second root ambiguity and contradictory terminal error",
+      "events": [
+        {
+          "record_id": "rec_root_first",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.first",
+          "semantic": {
+            "type": "agent.run",
+            "name": "first root"
+          }
+        },
+        {
+          "record_id": "rec_root_second",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.second",
+          "semantic": {
+            "type": "workflow.run",
+            "name": "second root"
+          }
+        },
+        {
+          "record_id": "rec_outcome_conflict",
+          "event_kind": "lifecycle",
+          "phase": "end",
+          "name": "fixture.first",
+          "semantic": {
+            "type": "agent.run",
+            "status": "succeeded",
+            "error": {
+              "type": "runtime_error",
+              "message": "Conflicting terminal evidence.",
+              "recoverable": false
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_first"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_root_first",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "first root"
+          }
+        },
+        {
+          "id": "rec_root_second",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "reason": "ambiguous_root_start",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "A second unparented root started while the trace already had an active root."
+          }
+        },
+        {
+          "id": "rec_outcome_conflict",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.outcome",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_first",
+          "data": {
+            "status": "unknown",
+            "error": {
+              "type": "runtime_error",
+              "message": "Conflicting terminal evidence.",
+              "recoverable": false
+            }
+          }
+        },
+        {
+          "id": "__generated_record_1__",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_first",
+          "data": {
+            "reason": "contradictory_terminal_error",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "A normal terminal status was accompanied by error evidence."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_outcome_conflict"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "contradictory tool terminal error",
+      "events": [
+        {
+          "record_id": "rec_tool_conflict_root",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "tool conflict"
+          }
+        },
+        {
+          "record_id": "rec_tool_conflict_call",
+          "event_kind": "tool",
+          "phase": "start",
+          "name": "get_weather",
+          "native_identity": "call-1",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "get_weather",
+            "input": {
+              "city": "London"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_conflict_root"
+          }
+        },
+        {
+          "record_id": "rec_tool_conflict_result",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "get_weather",
+          "native_identity": "call-1",
+          "semantic": {
+            "type": "tool.result",
+            "status": "succeeded",
+            "error": {
+              "type": "tool_error",
+              "message": "Conflicting tool terminal evidence.",
+              "recoverable": false
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_conflict_call"
+          }
+        },
+        {
+          "record_id": "rec_tool_conflict_followup",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "get_weather",
+          "native_identity": "call-1",
+          "semantic": {
+            "type": "tool.result",
+            "status": "failed",
+            "error": {
+              "type": "tool_error",
+              "message": "Late duplicate terminal.",
+              "recoverable": false
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_conflict_call"
+          }
+        },
+        {
+          "record_id": "rec_tool_conflict_outcome",
+          "event_kind": "lifecycle",
+          "phase": "end",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "status": "succeeded"
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_conflict_root"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_tool_conflict_root",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "tool conflict"
+          }
+        },
+        {
+          "id": "rec_tool_conflict_call",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.call",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_conflict_root",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "call-1",
+            "name": "get_weather",
+            "input": {
+              "city": "London"
+            }
+          }
+        },
+        {
+          "id": "rec_tool_conflict_result",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_conflict_root",
+          "data": {
+            "reason": "contradictory_terminal_error",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "A non-failed tool result was accompanied by error evidence."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_tool_conflict_call"
+            }
+          ]
+        },
+        {
+          "id": "rec_tool_conflict_followup",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_conflict_root",
+          "data": {
+            "reason": "unmatched_tool_result",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "Tool result had no exact matching tool call."
+          }
+        },
+        {
+          "id": "rec_tool_conflict_outcome",
+          "seq": 5,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.outcome",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_conflict_root",
+          "data": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "canonical tool execution type and phase matrix",
+      "events": [
+        {
+          "record_id": "rec_tool_matrix_root",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "tool matrix"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_event",
+          "event_kind": "tool",
+          "phase": "event",
+          "name": "event execution",
+          "native_identity": "matrix-event",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "lookup",
+            "input": {
+              "query": "event"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_root"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_result",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "event execution result",
+          "native_identity": "matrix-event",
+          "semantic": {
+            "type": "tool.result",
+            "status": "succeeded",
+            "output": {
+              "ok": true
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_event"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_start",
+          "event_kind": "tool",
+          "phase": "start",
+          "name": "start execution",
+          "native_identity": "matrix-start",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "lookup",
+            "input": {
+              "query": "start"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_root"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_start_result",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "start execution result",
+          "native_identity": "matrix-start",
+          "semantic": {
+            "type": "tool.result",
+            "status": "succeeded",
+            "output": {
+              "ok": true
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_start"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_alias",
+          "event_kind": "tool",
+          "phase": "start",
+          "name": "alias execution",
+          "semantic": {
+            "type": "tool.call",
+            "name": "lookup",
+            "input": {
+              "query": "alias"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_root"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_alias_event",
+          "event_kind": "tool",
+          "phase": "event",
+          "name": "event alias execution",
+          "semantic": {
+            "type": "tool.call",
+            "name": "lookup",
+            "input": {
+              "query": "event alias"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_root"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_wrong_phase",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "terminal execution",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "lookup",
+            "input": {
+              "query": "terminal"
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_root"
+          }
+        },
+        {
+          "record_id": "rec_tool_matrix_outcome",
+          "event_kind": "lifecycle",
+          "phase": "end",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "status": "succeeded"
+          },
+          "correlation": {
+            "parent_record_id": "rec_tool_matrix_root"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_tool_matrix_root",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "tool matrix"
+          }
+        },
+        {
+          "id": "rec_tool_matrix_event",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.call",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "matrix-event",
+            "name": "lookup",
+            "input": {
+              "query": "event"
+            }
+          }
+        },
+        {
+          "id": "rec_tool_matrix_result",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.result",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "matrix-event",
+            "status": "succeeded",
+            "output": {
+              "ok": true
+            }
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_tool_matrix_event"
+            }
+          ]
+        },
+        {
+          "id": "rec_tool_matrix_start",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.call",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "call_id": "__generated_call_2__",
+            "native_call_id": "matrix-start",
+            "name": "lookup",
+            "input": {
+              "query": "start"
+            }
+          }
+        },
+        {
+          "id": "rec_tool_matrix_start_result",
+          "seq": 5,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.result",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "call_id": "__generated_call_2__",
+            "native_call_id": "matrix-start",
+            "status": "succeeded",
+            "output": {
+              "ok": true
+            }
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_tool_matrix_start"
+            }
+          ]
+        },
+        {
+          "id": "rec_tool_matrix_alias",
+          "seq": 6,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "reason": "unsupported_semantic_projection",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "Unsupported tool/start semantic record: alias execution."
+          }
+        },
+        {
+          "id": "rec_tool_matrix_alias_event",
+          "seq": 7,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "reason": "unsupported_semantic_projection",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "Unsupported tool/event semantic record: event alias execution."
+          }
+        },
+        {
+          "id": "rec_tool_matrix_wrong_phase",
+          "seq": 8,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "reason": "unsupported_semantic_projection",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "Unsupported tool/end semantic record: terminal execution."
+          }
+        },
+        {
+          "id": "rec_tool_matrix_outcome",
+          "seq": 9,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.outcome",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_tool_matrix_root",
+          "data": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "duplicate active identities preserve original exact correlations",
+      "events": [
+        {
+          "record_id": "rec_duplicate_root",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "duplicate identity run"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_proposal",
+          "event_kind": "tool",
+          "phase": "event",
+          "name": "lookup proposal",
+          "native_identity": "duplicate-tool",
+          "semantic": {
+            "type": "tool.proposal",
+            "name": "lookup",
+            "input": {
+              "value": 1
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_root"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_proposal_rejected",
+          "event_kind": "tool",
+          "phase": "event",
+          "name": "duplicate lookup proposal",
+          "native_identity": "duplicate-tool",
+          "semantic": {
+            "type": "tool.proposal",
+            "name": "lookup",
+            "input": {
+              "value": 2
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_root"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_call",
+          "event_kind": "tool",
+          "phase": "start",
+          "name": "lookup call",
+          "native_identity": "duplicate-tool",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "lookup",
+            "input": {
+              "value": 1
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_root"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_call_rejected",
+          "event_kind": "tool",
+          "phase": "start",
+          "name": "duplicate lookup call",
+          "native_identity": "duplicate-tool",
+          "semantic": {
+            "type": "tool.execution",
+            "name": "lookup",
+            "input": {
+              "value": 2
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_root"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_result",
+          "event_kind": "tool",
+          "phase": "end",
+          "name": "lookup result",
+          "native_identity": "duplicate-tool",
+          "semantic": {
+            "type": "tool.result",
+            "status": "succeeded",
+            "output": {
+              "value": 1
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_call"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_request",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "model request",
+          "native_identity": "duplicate-model",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model"
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_root"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_request_rejected",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "duplicate model request",
+          "native_identity": "duplicate-model",
+          "semantic": {
+            "type": "model.request",
+            "model": "other-model"
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_root"
+          }
+        },
+        {
+          "record_id": "rec_duplicate_response",
+          "event_kind": "model",
+          "phase": "end",
+          "name": "model response",
+          "native_identity": "duplicate-model",
+          "semantic": {
+            "type": "model.response",
+            "status": "completed",
+            "content": "original"
+          },
+          "correlation": {
+            "parent_record_id": "rec_duplicate_request"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_duplicate_root",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "duplicate identity run"
+          }
+        },
+        {
+          "id": "rec_duplicate_proposal",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.proposal",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "duplicate-tool",
+            "name": "lookup",
+            "input": {
+              "value": 1
+            }
+          }
+        },
+        {
+          "id": "rec_duplicate_proposal_rejected",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "reason": "duplicate_active_tool_identity",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "A tool proposal reused an identity that was already active."
+          }
+        },
+        {
+          "id": "rec_duplicate_call",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.call",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "duplicate-tool",
+            "name": "lookup",
+            "input": {
+              "value": 1
+            }
+          },
+          "links": [
+            {
+              "type": "derived_from",
+              "record": "rec_duplicate_proposal"
+            }
+          ]
+        },
+        {
+          "id": "rec_duplicate_call_rejected",
+          "seq": 5,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "reason": "duplicate_active_tool_identity",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "A tool call reused an identity that was already active."
+          }
+        },
+        {
+          "id": "rec_duplicate_result",
+          "seq": 6,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "tool.result",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "call_id": "__generated_call_1__",
+            "native_call_id": "duplicate-tool",
+            "status": "succeeded",
+            "output": {
+              "value": 1
+            }
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_duplicate_call"
+            }
+          ]
+        },
+        {
+          "id": "rec_duplicate_request",
+          "seq": 7,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "model": "fixture-model"
+          }
+        },
+        {
+          "id": "rec_duplicate_request_rejected",
+          "seq": 8,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "reason": "duplicate_active_model_identity",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "A model request reused an identity that was already active."
+          }
+        },
+        {
+          "id": "rec_duplicate_response",
+          "seq": 9,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.response",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_duplicate_root",
+          "data": {
+            "status": "completed",
+            "content": "original"
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_duplicate_request"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "external previous turn remains bundle-local metadata",
+      "events": [
+        {
+          "record_id": "rec_external_continuation",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "resumed run",
+          "conversation_id": "conversation-shared",
+          "turn_id": "turn-beta",
+          "turn_index": 1,
+          "previous_turn_id": "turn-alpha",
+          "semantic": {
+            "type": "agent.run",
+            "name": "resumed run"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_external_continuation",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "resumed run",
+            "conversation_id": "conversation-shared",
+            "turn_id": "turn-beta",
+            "turn_index": 1,
+            "previous_turn_id": "turn-alpha"
+          }
+        }
+      ]
+    }
+  ]
+}

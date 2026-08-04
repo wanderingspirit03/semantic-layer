@@ -1,0 +1,14 @@
+project_id      = "semantic-layer-production"
+environment     = "prod"
+bucket_name     = "semantic-layer-bundles-prod-REPLACE"
+meter_bucket_name = "semantic-layer-metering-prod-REPLACE"
+key_registry_secret_version = "1"
+container_image = "europe-west2-docker.pkg.dev/semantic-layer-production/semantic-layer-services/semantic-layer-ingest@sha256:REPLACE"
+max_instances   = 5
+billing_account_id = "000000-000000-000000"
+monthly_budget_amount = 500
+budget_currency_code  = "USD"
+ops_email          = "semantic-layer-ops@example.com"
+bundle_operator_members       = ["group:semantic-layer-bundle-ops@example.com"]
+release_builder_members       = ["group:semantic-layer-release@example.com"]
+key_registry_operator_members = ["group:semantic-layer-key-ops@example.com"]

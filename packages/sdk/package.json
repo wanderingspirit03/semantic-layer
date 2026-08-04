@@ -1,0 +1,85 @@
+{
+  "name": "semantic-layer-capture",
+  "version": "0.2.0-beta.0",
+  "type": "module",
+  "description": "Local semantic trace capture SDK for agent systems",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanderingspirit03/semantic-layer.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/wanderingspirit03/semantic-layer#readme",
+  "bugs": {
+    "url": "https://github.com/wanderingspirit03/semantic-layer/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./scripts/clean.mjs && tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --project tsconfig.tests.current.json && tsc --project tsconfig.tests.previous.json",
+    "contracts:generate": "node ./scripts/generate-capture-v1.mjs --write",
+    "contracts:check": "node ./scripts/generate-capture-v1.mjs",
+    "prepack": "pnpm run contracts:check && pnpm run build"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/core": "2.9.0",
+    "@opentelemetry/resources": "2.9.0",
+    "@opentelemetry/sdk-logs": "0.220.0",
+    "@opentelemetry/sdk-trace-base": "2.9.0",
+    "@types/node": "^20.11.0",
+    "agents-current": "npm:@openai/agents@0.13.2",
+    "agents-previous": "npm:@openai/agents@0.13.1",
+    "ai-current": "npm:ai@7.0.22",
+    "ai-previous": "npm:ai@7.0.21",
+    "anthropic-current": "npm:@anthropic-ai/sdk@0.111.0",
+    "anthropic-previous": "npm:@anthropic-ai/sdk@0.110.0",
+    "gemini-current": "npm:@google/genai@2.11.0",
+    "gemini-previous": "npm:@google/genai@2.10.0",
+    "json-schema-to-typescript": "15.0.4",
+    "langgraph-current": "npm:@langchain/langgraph@1.4.7",
+    "langgraph-previous": "npm:@langchain/langgraph@1.4.6",
+    "langchain-core": "npm:@langchain/core@1.2.2",
+    "mastra-current": "npm:@mastra/core@1.50.1",
+    "mastra-memory": "npm:@mastra/memory@1.22.2",
+    "mastra-observability": "npm:@mastra/observability@1.16.0",
+    "mastra-previous": "npm:@mastra/core@1.50.0",
+    "openai-current": "npm:openai@6.46.0",
+    "openai-previous": "npm:openai@6.45.0",
+    "strands-current": "npm:@strands-agents/sdk@1.9.0",
+    "strands-previous": "npm:@strands-agents/sdk@1.8.0",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0"
+  },
+  "dependencies": {
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.8 <2"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0 || >=25.9.0"
+  }
+}

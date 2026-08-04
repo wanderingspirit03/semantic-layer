@@ -1,0 +1,36 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_error000000001",
+  "record_id": "record_error00000001",
+  "seq": 4,
+  "observed_at": "2026-01-01T00:00:03.000Z",
+  "monotonic_ns": 4,
+  "trace_id": "trace_error00000001",
+  "source": {
+    "source_id": "fixture.app/fixture-error",
+    "name": "fixture-error",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "error",
+  "phase": "error",
+  "name": "fixture.failure",
+  "native": {
+    "error": {
+      "type": "FixtureError",
+      "message": "synthetic failure",
+      "cause": { "type": "FixtureCause", "message": "synthetic cause" }
+    }
+  },
+  "semantic": { "status": "errored" },
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "python",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

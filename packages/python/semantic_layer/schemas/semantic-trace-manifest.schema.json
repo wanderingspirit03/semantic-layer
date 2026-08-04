@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/trace/v1/semantic-trace-manifest.schema.json",
+  "title": "SemanticTraceManifestV1",
+  "type": "object",
+  "required": [
+    "schema",
+    "record_schema",
+    "bundle_id",
+    "state",
+    "sdk",
+    "privacy_mode",
+    "started_at",
+    "updated_at",
+    "sources",
+    "trace",
+    "blobs"
+  ],
+  "properties": {
+    "schema": { "const": "semantic_trace_manifest_v1" },
+    "record_schema": { "const": "semantic_trace_record_v1" },
+    "bundle_id": { "$ref": "#/$defs/id" },
+    "state": { "enum": ["open", "closing", "sealed", "recovered"] },
+    "sdk": {
+      "type": "object",
+      "required": ["language", "version"],
+      "properties": {
+        "language": { "enum": ["typescript", "python"] },
+        "version": { "$ref": "#/$defs/short_string" }
+      },
+      "additionalProperties": false
+    },
+    "privacy_mode": { "enum": ["production-safe", "local-rich"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "sealed_at": { "type": "string", "format": "date-time" },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "$ref": "#/$defs/short_string" },
+          "version": { "$ref": "#/$defs/short_string" },
+          "seam": { "$ref": "#/$defs/short_string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "trace": {
+      "type": "object",
+      "required": ["path", "records", "last_seq", "bytes", "losses", "sha256"],
+      "properties": {
+        "path": { "const": "trace.jsonl" },
+        "records": { "type": "integer", "minimum": 0 },
+        "last_seq": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "losses": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of persisted loss records in trace.jsonl; each record's data.count carries its semantic loss count."
+        },
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "blobs": {
+      "type": "object",
+      "required": ["path", "count", "bytes"],
+      "properties": {
+        "path": { "const": "blobs" },
+        "count": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": { "enum": ["sealed", "recovered"] }
+        },
+        "required": ["state"]
+      },
+      "then": {
+        "required": ["sealed_at"],
+        "properties": {
+          "trace": {
+            "type": "object",
+            "properties": {
+              "sha256": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._:-]{2,127}$"
+    },
+    "short_string": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  }
+}

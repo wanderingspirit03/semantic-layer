@@ -1,0 +1,47 @@
+{
+  "name": "semantic-layer-cloud",
+  "version": "0.1.0-pilot.1",
+  "type": "module",
+  "description": "Durable framework-neutral uploader for Semantic Layer trace bundles",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanderingspirit03/semantic-layer.git",
+    "directory": "packages/cloud"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "semantic-layer-cloud": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./scripts/clean.mjs && tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --project tsconfig.tests.json",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "semantic-layer-capture": "0.2.0-beta.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ajv": "8.17.1",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0 || >=25.9.0"
+  }
+}

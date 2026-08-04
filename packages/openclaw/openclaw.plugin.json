@@ -1,0 +1,105 @@
+{
+  "id": "semantic-layer-openclaw",
+  "name": "Semantic Layer",
+  "description": "Captures rich OpenClaw evidence into local semantic traces and durably queues sealed bundles for upload.",
+  "version": "0.1.0-pilot.1",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "maxProperties": 0
+      },
+      {
+        "required": [
+          "endpoint",
+          "ingestKey",
+          "identityKey",
+          "installationId",
+          "serviceName"
+        ]
+      }
+    ],
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://"
+      },
+      "ingestKey": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          { "$ref": "#/$defs/secretRef" }
+        ]
+      },
+      "identityKey": {
+        "oneOf": [
+          { "type": "string", "minLength": 32 },
+          { "$ref": "#/$defs/secretRef" }
+        ]
+      },
+      "installationId": {
+        "type": "string",
+        "pattern": "^install_[A-Za-z0-9_-]{22,128}$"
+      },
+      "serviceName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "outputDirectory": {
+        "type": "string",
+        "minLength": 1
+      },
+      "spoolDirectory": {
+        "type": "string",
+        "minLength": 1
+      },
+      "maxSpoolBytes": {
+        "type": "integer",
+        "minimum": 1048576
+      }
+    },
+    "$defs": {
+      "secretRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "provider", "id"],
+        "properties": {
+          "source": { "enum": ["env", "file", "exec"] },
+          "provider": { "type": "string", "minLength": 1 },
+          "id": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        { "path": "ingestKey", "expected": "string" },
+        { "path": "identityKey", "expected": "string" }
+      ]
+    }
+  },
+  "uiHints": {
+    "endpoint": {
+      "label": "Ingest endpoint",
+      "help": "HTTPS Cloud Run ingestion endpoint."
+    },
+    "ingestKey": {
+      "label": "Ingestion key",
+      "sensitive": true
+    },
+    "identityKey": {
+      "label": "Stable identity key",
+      "sensitive": true
+    },
+    "installationId": {
+      "label": "Stable installation ID",
+      "help": "Random identity for this OpenClaw VM; generated once by managed setup."
+    },
+    "serviceName": {
+      "label": "Service name"
+    }
+  }
+}

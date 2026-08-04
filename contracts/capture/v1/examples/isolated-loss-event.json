@@ -1,0 +1,39 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_loss0000000001",
+  "record_id": "record_loss000000001",
+  "seq": 5,
+  "observed_at": "2026-01-01T00:00:04.000Z",
+  "monotonic_ns": 5,
+  "trace_id": "trace_loss000000001",
+  "source": {
+    "source_id": "builtin/semantic-layer-runtime",
+    "name": "capture-runtime",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": true
+  },
+  "event_kind": "loss",
+  "phase": "gap",
+  "name": "capture.serialization_failure",
+  "native": {},
+  "semantic": {},
+  "correlation": {},
+  "loss": {
+    "reason": "serialization_failure",
+    "stage": "serialize",
+    "affected_record_id": "record_target0000001",
+    "affected_path": "$.native.fixture",
+    "count": 1,
+    "recoverable": false,
+    "detail": "synthetic isolated loss example"
+  },
+  "loss_refs": [],
+  "blob_refs": [],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}

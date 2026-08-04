@@ -1,0 +1,39 @@
+{
+  "schema": "semantic_capture_event_v1",
+  "run_id": "run_blob0000000001",
+  "record_id": "record_blob000000001",
+  "seq": 6,
+  "observed_at": "2026-01-01T00:00:05.000Z",
+  "monotonic_ns": 6,
+  "trace_id": "trace_blob000000001",
+  "source": {
+    "source_id": "fixture.app/fixture-binary",
+    "name": "fixture-binary",
+    "seam": "isolated-schema-example",
+    "identity_domain": "fixture",
+    "official": false
+  },
+  "event_kind": "model",
+  "phase": "event",
+  "name": "fixture.binary_output",
+  "native": { "attachment": "stored-as-blob" },
+  "semantic": { "media_type": "application/octet-stream" },
+  "correlation": {},
+  "loss_refs": [],
+  "blob_refs": [
+    {
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "algorithm": "sha256",
+      "mime_type": "application/octet-stream",
+      "byte_length": 32,
+      "scan": "clean",
+      "inline_omitted": true
+    }
+  ],
+  "provenance": {
+    "language": "typescript",
+    "sdk_name": "semantic-layer-capture",
+    "sdk_version": "fixture",
+    "capture_policy": "rich_local_credential_scrubbed"
+  }
+}
