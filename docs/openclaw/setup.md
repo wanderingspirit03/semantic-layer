@@ -16,32 +16,46 @@ need the following values before you start:
 
 - The HTTPS ingest endpoint.
 - A separate ingestion key for this OpenClaw host.
+- The installation ID assigned to the same ingestion key.
 - A service name that identifies the host in traces. Do not put a person's
   name, email address, or account ID in the service name.
 
 The setup command asks for the ingestion key without showing it. Do not put
-the key in the command or in an OpenClaw configuration file.
+the key in the command or in an OpenClaw configuration file. Each host must
+use its own ingestion key and installation ID. If you add another host later,
+ask for one new key and installation ID for that host.
+
+The first setup requires `--installation-id`. Later setup runs keep the stored
+installation ID. If you pass a different ID on a later run, setup stops without
+replacing it.
 
 ## Install Semantic Layer
 
-Run the following command on the OpenClaw host. Replace the endpoint and
-service name with the values for the installation.
+Run the following command on the OpenClaw host. Replace the endpoint, service
+name, and installation ID with the values for the installation.
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.1 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.2 setup \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
-  --service-name "<SERVICE_NAME>"
+  --service-name "<SERVICE_NAME>" \
+  --installation-id "<INSTALLATION_ID>"
 ```
 
 Setup performs the following work:
 
 - It checks the OpenClaw and Node.js versions.
-- It tests the endpoint and asks for the ingestion key.
+- It checks that the endpoint accepts the assigned ingestion key and
+  installation ID, then asks for the key without showing it.
 - It installs and enables the Semantic Layer plugin.
 - It stores the key in a private file and puts a reference in the OpenClaw
   configuration.
+- It stores the assigned installation ID and refuses to replace it with a
+  different ID on a later setup run.
 - It keeps the Gateway on the local host, restarts it once, and checks the
   completed installation.
+
+Setup changes the Semantic Layer plugin entry. It does not disable Latitude or
+other installed plugins.
 
 Semantic Layer captures model messages, tool activity, usage, and reasoning
 that the provider exposes to OpenClaw. It scrubs known credentials before it
@@ -53,12 +67,12 @@ content.
 Run doctor after setup and whenever you need to check the installation.
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.1 doctor
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.2 doctor
 ```
 
 Doctor checks the installed version, plugin state, file permissions, OpenClaw
-configuration, Gateway, endpoint health, and ingestion key. It does not
-create a trace or print the key.
+configuration, Gateway, endpoint health, and the exact ingestion key and
+installation ID pair. It does not create a trace or print the key.
 
 Next, run one synthetic task through the normal OpenClaw interface. Use a
 reasoning model and ask it to use at least one tool. For example, ask it to list
@@ -80,7 +94,7 @@ Rotate the ingestion key with the following command. The command asks for
 the new key without showing it and checks the key before replacing the old one.
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.1 rotate-key
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.2 rotate-key
 ```
 
 Disable capture without removing the package:

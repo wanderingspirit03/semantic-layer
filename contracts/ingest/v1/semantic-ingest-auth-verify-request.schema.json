@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-layer.dev/contracts/ingest/v1/semantic-ingest-auth-verify-request.schema.json",
+  "title": "SemanticIngestAuthVerifyRequestV1",
+  "type": "object",
+  "required": ["installation_id"],
+  "properties": {
+    "installation_id": {
+      "type": "string",
+      "pattern": "^install_[A-Za-z0-9_-]{22,128}$"
+    }
+  },
+  "additionalProperties": false
+}

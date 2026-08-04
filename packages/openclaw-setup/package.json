@@ -1,11 +1,11 @@
 {
   "name": "semantic-layer-openclaw-setup",
-  "version": "0.1.0-pilot.1",
+  "version": "0.1.0-pilot.2",
   "type": "module",
   "description": "Client setup and doctor CLI for the Semantic Layer OpenClaw plugin",
   "license": "MIT",
   "bin": {
-    "semantic-layer-openclaw-setup": "./dist/bin.js"
+    "semantic-layer-openclaw-setup": "dist/bin.js"
   },
   "files": [
     "dist",

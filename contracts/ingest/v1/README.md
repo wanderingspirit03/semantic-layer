@@ -38,6 +38,23 @@ matches the response header:
 `{"status":"ok"}`. A successful health request does not test a key, storage
 access, or bundle upload.
 
+Setup checks that a key belongs to its assigned installation without creating
+upload state:
+
+```http
+POST /v1/auth/verify
+Content-Type: application/json
+Authorization: Bearer <INGESTION_KEY>
+
+{"installation_id":"<INSTALLATION_ID>"}
+```
+
+The request and response use the auth verify schemas in this directory. A
+matching active key and installation return `200` with `{"status":"ok"}`. An
+invalid request returns `400`, and a valid installation ID that does not match
+the key returns `403`. A legacy key that only identifies a tenant also returns
+`403`.
+
 ## Accepted bundle
 
 The service accepts a directory with these files:

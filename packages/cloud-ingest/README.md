@@ -33,6 +33,10 @@ installation.
 Tenant only string entries support legacy reads of an existing manifest v1
 completion. They cannot begin, upload, complete, or delete data.
 
+`POST /v1/auth/verify` checks that an active key belongs to a supplied
+installation ID. Setup uses this route before it changes an OpenClaw host. The
+route does not create upload or bundle state.
+
 ## Storage interface
 
 The service writes these prefixes:

@@ -28,6 +28,8 @@ async function validateIngestContracts() {
     .filter((name) => name.endsWith('.schema.json'))
     .sort();
   assert.deepEqual(names, [
+    'semantic-ingest-auth-verify-request.schema.json',
+    'semantic-ingest-auth-verify-response.schema.json',
     'semantic-ingest-begin-request.schema.json',
     'semantic-ingest-complete-request.schema.json',
     'semantic-ingest-complete-response.schema.json',
@@ -44,6 +46,15 @@ async function validateIngestContracts() {
   }
 
   const sha = 'a'.repeat(64);
+  assertValid(validators.get('semantic-ingest-auth-verify-request.schema.json'), {
+    installation_id: 'install_abcdefghijklmnopqrstuv',
+  });
+  assertInvalid(validators.get('semantic-ingest-auth-verify-request.schema.json'), {
+    installation_id: 'customer-hostname',
+  });
+  assertValid(validators.get('semantic-ingest-auth-verify-response.schema.json'), {
+    status: 'ok',
+  });
   assertValid(validators.get('semantic-ingest-begin-request.schema.json'), {
     protocol_version: '1',
     bundle_digest: sha,
@@ -158,8 +169,20 @@ async function runLocalEndToEnd() {
     const address = service.server.address();
     assert(address && typeof address !== 'string', 'local ingest did not bind');
 
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const verification = await fetch(`${endpoint}/v1/auth/verify`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${ingestKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ installation_id: installationId }),
+    });
+    assert.equal(verification.status, 200);
+    assert.deepEqual(await verification.json(), { status: 'ok' });
+
     uploader = cloudPackage.createCloudUploader({
-      endpoint: `http://127.0.0.1:${address.port}`,
+      endpoint,
       ingestKey,
       installationId,
       spoolDirectory: join(work, 'spool'),
@@ -190,7 +213,7 @@ async function runLocalEndToEnd() {
     for (const path of requestPaths) {
       assert.match(
         path,
-        /^\/v1\/bundles\/[^/]+\/(?:begin|complete|files\/[^/]+\/parts\/\d+)$/u,
+        /^(?:\/v1\/auth\/verify|\/v1\/bundles\/[^/]+\/(?:begin|complete|files\/[^/]+\/parts\/\d+))$/u,
         `producer-specific backend route observed: ${path}`,
       );
     }
