@@ -72,6 +72,14 @@ instances requires a staging deployment.
 
 ## Inspect stored bundles
 
+Use the public read only trace CLI for normal discovery, sync, and local trace
+review. Its [package guide](../../../packages/trace-cli/README.md) contains the
+setup and command flow. Give team members the separate `trace_reader_members`
+role. That role cannot delete evidence or change metering state.
+
+Use the private operations tool below only for incomplete upload checks,
+metering work, approved deletion, and incident recovery.
+
 The private `semantic-layer-ingest-ops` tool uses Application Default
 Credentials and the two bucket environment variables. Run it only from an
 approved maintainer workstation in the correct environment.

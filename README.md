@@ -10,6 +10,7 @@ local filesystem. Separate packages provide OpenClaw capture and cloud upload.
 - [Use the Python SDK](packages/python/README.md).
 - [Install Semantic Layer for OpenClaw](docs/openclaw/setup.md).
 - [Upload sealed bundles](packages/cloud/README.md).
+- [Read completed cloud traces](packages/trace-cli/README.md).
 - [See tested integrations](docs/sdk/integrations.md).
 
 OpenClaw capture currently requires a managed ingest endpoint. The TypeScript
@@ -67,6 +68,7 @@ The main source directories are:
 - `packages/openclaw-setup/` for OpenClaw setup and diagnosis.
 - `packages/cloud/` for the uploader.
 - `packages/cloud-ingest/` for the private receiver.
+- `packages/trace-cli/` for read only cloud trace access.
 - `contracts/` for capture, trace, and ingest schemas.
 - `infra/gcp/` for the optional hosted infrastructure.
 

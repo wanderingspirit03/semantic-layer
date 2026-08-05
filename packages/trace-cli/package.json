@@ -1,0 +1,43 @@
+{
+  "name": "semantic-layer-traces",
+  "version": "0.1.0-pilot.1",
+  "type": "module",
+  "description": "Read-only CLI for discovering, syncing, and inspecting Semantic Layer traces in Google Cloud Storage",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanderingspirit03/semantic-layer.git",
+    "directory": "packages/trace-cli"
+  },
+  "homepage": "https://github.com/wanderingspirit03/semantic-layer/tree/main/packages/trace-cli#readme",
+  "bugs": {
+    "url": "https://github.com/wanderingspirit03/semantic-layer/issues"
+  },
+  "bin": {
+    "semantic-layer-traces": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./scripts/clean.mjs && tsc",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.16.0",
+    "semantic-layer-capture": "0.2.0-beta.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "~5.7.0",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0 || >=25.9.0"
+  }
+}

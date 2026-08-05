@@ -13,6 +13,8 @@ test('provisions the pilot security, retention, delivery, and alert boundaries',
     'google_logging_metric',
     'google_monitoring_alert_policy',
     'google_storage_bucket_iam_member" "operators',
+    'google_storage_managed_folder" "completed_evidence',
+    'google_storage_managed_folder_iam_member" "trace_readers',
   ]) assert.match(main, new RegExp(`resource "${resource}`, 'u'));
   assert.match(main, /public_access_prevention\s+=\s+"enforced"/u);
   assert.match(main, /retention_duration_seconds\s+=\s+0/u);
@@ -21,6 +23,9 @@ test('provisions the pilot security, retention, delivery, and alert boundaries',
   assert.match(main, /google_storage_bucket" "metering/u);
   assert.match(main, /google_storage_bucket" "build_source/u);
   assert.match(main, /storage\.objects\.update/u);
+  assert.match(main, /completed_evidence[^}]*name\s+=\s+"tenants\/"/u);
+  assert.match(main, /trace_readers[^}]*completed_evidence[^}]*operator_objects/u);
+  assert.doesNotMatch(main, /trace_readers[^}]*operator_delete/u);
   assert.match(main, /log_type\s+=\s+"DATA_READ"/u);
   assert.match(main, /append_only_deletion_audit_prefix/u);
   assert.match(main, /evidence_and_upload_prefixes_only/u);
