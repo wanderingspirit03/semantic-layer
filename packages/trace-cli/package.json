@@ -14,7 +14,7 @@
     "url": "https://github.com/wanderingspirit03/semantic-layer/issues"
   },
   "bin": {
-    "semantic-layer-traces": "./dist/bin.js"
+    "semantic-layer-traces": "dist/bin.js"
   },
   "files": [
     "dist",
