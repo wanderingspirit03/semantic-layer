@@ -93,6 +93,12 @@ variable "bundle_operator_members" {
   default     = []
 }
 
+variable "trace_reader_members" {
+  description = "IAM members allowed only to list and read completed evidence objects with the trace CLI."
+  type        = set(string)
+  default     = []
+}
+
 variable "release_builder_members" {
   description = "IAM members allowed to submit builds and publish digest-pinned ingest images."
   type        = set(string)

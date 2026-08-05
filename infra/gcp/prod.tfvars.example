@@ -10,5 +10,6 @@ monthly_budget_amount = 500
 budget_currency_code  = "USD"
 ops_email          = "semantic-layer-ops@example.com"
 bundle_operator_members       = ["group:semantic-layer-bundle-ops@example.com"]
+trace_reader_members          = ["group:semantic-layer-trace-readers@example.com"]
 release_builder_members       = ["group:semantic-layer-release@example.com"]
 key_registry_operator_members = ["group:semantic-layer-key-ops@example.com"]
