@@ -104,6 +104,9 @@ importers:
 
   packages/openclaw-setup:
     dependencies:
+      json5:
+        specifier: ^2.2.3
+        version: 2.2.3
       semantic-layer-cloud:
         specifier: 0.1.0-pilot.2
         version: link:../cloud
@@ -6021,7 +6024,6 @@ packages:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
     hasBin: true
-    dev: true
 
   /jsonwebtoken@9.0.3:
     resolution: {integrity: sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==}

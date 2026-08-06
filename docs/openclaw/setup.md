@@ -32,14 +32,14 @@ containers, run setup once on each one with its own installation ID and key.
 
 ## Container installation
 
-The pinned container pilot uses setup package `0.1.0-pilot.4` and runtime
+The pinned container pilot uses setup package `0.1.0-pilot.5` and runtime
 plugin `0.1.0-pilot.2`.
 
 Run this command inside the OpenClaw container as the same user that runs
 OpenClaw:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.4 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.5 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
@@ -58,6 +58,10 @@ the following work:
 4. It validates the final OpenClaw configuration.
 5. It confirms that every Gateway value and every other plugin entry stayed the
    same.
+
+Setup checks the Semantic Layer credential file and secret references. It does
+not fail because of an existing secret warning in another part of the customer
+config.
 
 Container setup does not change Gateway mode, bind address, host, port, or any
 other Gateway value. It does not disable Latitude or another plugin. It does
@@ -84,7 +88,7 @@ OpenClaw service restart for this container flow.
 After Gateway is healthy, run:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.4 doctor --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.5 doctor --container
 ```
 
 Doctor is read only. It checks the pinned plugin identity, persistent plugin
@@ -134,11 +138,13 @@ plugin version differs.
 An upgrade uses a new pinned setup release and a separate upgrade procedure.
 The pilot command does not replace an existing plugin with a different version.
 
-If setup fails after it starts changing the host, it removes the new Semantic
-Layer plugin and restores the previous Semantic Layer config, secret provider,
-credentials, and installation state. It also verifies that Gateway and every
-other plugin entry are unchanged. The command returns a nonzero status and does
-not print the ingestion key.
+Setup builds and validates a temporary complete config before it replaces the
+active config. This works with valid OpenClaw files that rely on channel
+defaults. If setup fails after it starts changing the host, it removes the new
+Semantic Layer plugin and restores the original config file directly. The
+original bytes, including comments, formatting, and the Gateway token, are
+restored. It also restores credentials and installation state. The command
+returns a nonzero status and does not print the ingestion key.
 
 ## Local storage and cleanup
 
@@ -159,7 +165,7 @@ acknowledgement.
 Run this command inside the container:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.4 uninstall --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.5 uninstall --container
 ```
 
 The command removes the Semantic Layer plugin, its config entry, its secret

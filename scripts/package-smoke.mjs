@@ -133,7 +133,7 @@ try {
     {
       name: 'semantic-layer-openclaw-setup',
       directory: 'packages/openclaw-setup',
-      version: '0.1.0-pilot.4',
+      version: '0.1.0-pilot.5',
       bin: 'semantic-layer-openclaw-setup',
     },
   ];

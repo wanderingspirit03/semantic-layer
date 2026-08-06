@@ -48,7 +48,6 @@ describe('client setup command contract', () => {
   it('uses the exact native npm package spec and one explicit restart', () => {
     const commands = setupCommandPlan(
       'npm:semantic-layer-openclaw@0.1.0-pilot.2',
-      '/safe/patch.json',
     );
     expect(commands[0]).toEqual([
       'plugins',
@@ -56,29 +55,9 @@ describe('client setup command contract', () => {
       'npm:semantic-layer-openclaw@0.1.0-pilot.2',
       '--pin',
     ]);
-    expect(commands).toContainEqual([
-      'config',
-      'patch',
-      '--file',
-      '/safe/patch.json',
-      '--replace-path',
-      'plugins.entries.semantic-layer-openclaw',
-      '--replace-path',
-      'secrets.providers.semantic_layer',
-      '--dry-run',
-    ]);
-    expect(commands).toContainEqual([
-      'config',
-      'patch',
-      '--file',
-      '/safe/patch.json',
-      '--replace-path',
-      'plugins.entries.semantic-layer-openclaw',
-      '--replace-path',
-      'secrets.providers.semantic_layer',
-    ]);
+    expect(commands.some((args) => args.includes('patch'))).toBe(false);
     expect(commands).toContainEqual(['config', 'validate']);
-    expect(commands).toContainEqual(['secrets', 'audit', '--check']);
+    expect(commands.some((args) => args[0] === 'secrets')).toBe(false);
     expect(commands).toContainEqual(['security', 'audit', '--json']);
     expect(
       commands.filter((args) => args[0] === 'gateway' && args[1] === 'restart'),
@@ -86,7 +65,7 @@ describe('client setup command contract', () => {
   });
 
   it('does not apply npm-only pinning to a local qualification tarball', () => {
-    expect(setupCommandPlan('/tmp/plugin.tgz', '/safe/patch.json')[0]).toEqual([
+    expect(setupCommandPlan('/tmp/plugin.tgz')[0]).toEqual([
       'plugins',
       'install',
       '/tmp/plugin.tgz',
@@ -96,7 +75,6 @@ describe('client setup command contract', () => {
   it('never changes or restarts the Gateway in container mode', () => {
     const commands = setupCommandPlan(
       'npm:semantic-layer-openclaw@0.1.0-pilot.2',
-      '/safe/patch.json',
       'container',
     );
     expect(commands).not.toContainEqual(['security', 'audit', '--json']);
@@ -123,13 +101,11 @@ describe('client setup command contract', () => {
     expect(generateIdentityKey()).toMatch(/^[a-f0-9]{64}$/u);
     expect(doctorCommandPlan()).toEqual([
       ['config', 'validate'],
-      ['secrets', 'audit', '--check'],
       ['security', 'audit', '--json'],
       ['gateway', 'status', '--deep', '--require-rpc'],
     ]);
     expect(doctorCommandPlan(true)).toEqual([
       ['config', 'validate'],
-      ['secrets', 'audit', '--check'],
       ['gateway', 'health', '--json'],
     ]);
   });
@@ -608,18 +584,22 @@ describe('client setup command contract', () => {
       enabled: true,
       config: { projectId: 'latitude-project', environment: 'staging' },
     };
-    await writeFile(
-      openClawConfigPath,
-      JSON.stringify({
+    const initialConfig = `${JSON.stringify(
+      {
+        channels: { slack: { enabled: true } },
         gateway: {
+          auth: { token: 'original-gateway-token' },
           mode: 'remote',
           bind: 'custom',
           customBindHost: '0.0.0.0',
           port: 18789,
         },
         plugins: { entries: { latitude: latitudeEntry } },
-      }),
-    );
+      },
+      null,
+      2,
+    )}\n`;
+    await writeFile(openClawConfigPath, initialConfig);
     await writeFile(
       executable,
       [
@@ -636,9 +616,10 @@ describe('client setup command contract', () => {
         "else if (args[0] === 'plugins' && args[1] === 'uninstall' && !args.includes('--dry-run')) { if (existsSync(process.env.PLUGIN_MARKER)) unlinkSync(process.env.PLUGIN_MARKER); const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); if (current.plugins?.entries) delete current.plugins.entries['semantic-layer-openclaw']; writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(current)); }",
         "else if (args[0] === 'config' && args[1] === 'validate' && process.env.FAIL_CONFIG_VALIDATE === '1') { process.stderr.write('injected config validation failure\\n'); process.exitCode = 1; }",
         "else if (args[0] === 'security' && args[1] === 'audit') process.stdout.write(JSON.stringify({ summary: { critical: 0 } }));",
+        "else if (args[0] === 'config' && args[1] === 'patch' && args.includes('--dry-run')) { const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const slack = current.channels?.slack; if (slack && ['mode', 'webhookPath', 'userTokenReadOnly', 'groupPolicy'].some((key) => !(key in slack))) { process.stderr.write(\"channels.slack.userTokenReadOnly: must have required property\\n\"); process.exitCode = 1; } }",
         "else if (args[0] === 'config' && args[1] === 'patch' && !args.includes('--dry-run')) { const patchPath = args[args.indexOf('--file') + 1]; const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const patch = JSON.parse(readFileSync(patchPath, 'utf8')); writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(merge(current, patch))); }",
         "else if (args[0] === 'config' && args[1] === 'file') process.stdout.write(process.env.OPENCLAW_CONFIG_PATH + '\\n');",
-        "else if (args[0] === 'config' && args[1] === 'get') { const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const value = get(current, args[2]); if (value === undefined) { process.stderr.write('Config path not found: ' + args[2] + '\\n'); process.exitCode = 1; } else process.stdout.write(args.includes('--json') ? JSON.stringify(value) : (typeof value === 'string' ? value : JSON.stringify(value))); }",
+        "else if (args[0] === 'config' && args[1] === 'get') { const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); let value = get(current, args[2]); if (args[2] === 'plugins.entries' && value && typeof value === 'object') value = { ...value, 'memory-core': { config: {} }, slack: { config: {} } }; if (value === undefined) { process.stderr.write('Config path not found: ' + args[2] + '\\n'); process.exitCode = 1; } else process.stdout.write(args.includes('--json') ? JSON.stringify(value) : (typeof value === 'string' ? value : JSON.stringify(value))); }",
         '',
       ].join('\n'),
     );
@@ -677,7 +658,6 @@ describe('client setup command contract', () => {
       return new Response('{"error":"NOT_FOUND"}', { status: 404 });
     };
     try {
-      const originalConfig = await readFile(openClawConfigPath, 'utf8');
       process.env.FAIL_CONFIG_VALIDATE = '1';
       await expect(
         main(
@@ -694,7 +674,7 @@ describe('client setup command contract', () => {
           { readSetupIngestKey: async () => 'ingest-secret' },
         ),
       ).resolves.toBe(1);
-      expect(await readFile(openClawConfigPath, 'utf8')).toBe(originalConfig);
+      expect(await readFile(openClawConfigPath, 'utf8')).toBe(initialConfig);
       await expect(lstat(pluginMarker)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(
         lstat(join(directory, 'semantic-layer', 'credentials.json')),
@@ -743,6 +723,7 @@ describe('client setup command contract', () => {
         'semantic-layer-openclaw',
       );
       expect(openClawConfig.gateway).toEqual({
+        auth: { token: 'original-gateway-token' },
         mode: 'remote',
         bind: 'custom',
         customBindHost: '0.0.0.0',

@@ -5,6 +5,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   realpath,
   readdir,
@@ -19,6 +20,7 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import JSON5 from 'json5';
 import { createCloudUploader } from 'semantic-layer-cloud';
 import { checkCompatibility, type CompatibilityResult } from './preflight.js';
 
@@ -555,10 +557,6 @@ async function setup(options: {
       'semantic-layer',
       'cloud-spool',
     );
-    const patchPath = join(
-      dirname(credentialPath),
-      'openclaw-config-patch.json',
-    );
     let snapshot: ManagedSetupSnapshot;
     try {
       snapshot = managedSetupSnapshot();
@@ -588,6 +586,20 @@ async function setup(options: {
         process.stderr.write(`FAIL ${failure}\n`);
       return 1;
     }
+
+    let configBackup: ConfigFileSnapshot;
+    try {
+      configBackup = await readActiveConfigFile();
+    } catch (error) {
+      process.stderr.write(
+        `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return 1;
+    }
+    const candidatePath = join(
+      dirname(configBackup.path),
+      `.semantic-layer-config-${process.pid}-${Date.now()}.json`,
+    );
 
     const credentialBackup = existingCredentials
       ? await readFile(credentialPath)
@@ -644,13 +656,17 @@ async function setup(options: {
         credentials,
         mode,
       });
-      await writeOwnerFileAtomically(
-        patchPath,
-        `${JSON.stringify(patch, null, 2)}\n`,
-      );
+      const currentConfig = await readConfigFile(configBackup.path);
+      await writeManagedConfigCandidate(currentConfig, patch, candidatePath);
 
-      for (const args of setupCommandPlan(packageSpec, patchPath, mode).slice(1)) {
-        const result = runOpenClaw(args);
+      const setupCommands = setupCommandPlan(packageSpec, mode).slice(1);
+      for (const args of setupCommands.filter(
+        (command) =>
+          !(command[0] === 'gateway' && command[1] === 'restart'),
+      )) {
+        const result = runOpenClaw(args, {
+          OPENCLAW_CONFIG_PATH: candidatePath,
+        });
         if (!result.ok)
           throw new Error(
             `OpenClaw command failed (${args.join(' ')}): ${result.stderr || result.stdout}`,
@@ -661,8 +677,18 @@ async function setup(options: {
             throw new Error(securityFailures.join(' '));
         }
       }
-      const preservedFailures = preservedConfigurationFailures(
-        snapshot,
+      await installConfigCandidate(candidatePath, configBackup);
+      if (mode === 'service') {
+        const restart = runOpenClaw(['gateway', 'restart']);
+        if (!restart.ok)
+          throw new Error(
+            `OpenClaw command failed (gateway restart): ${restart.stderr || restart.stdout}`,
+          );
+      }
+      const installedConfig = await readConfigFile(configBackup.path);
+      const preservedFailures = preservedFileConfigurationFailures(
+        configBackup,
+        installedConfig,
         mode === 'container',
       );
       if (preservedFailures.length > 0)
@@ -677,10 +703,9 @@ async function setup(options: {
     } catch (error) {
       const rollbackFailures = await rollbackManagedSetup({
         credentialBackup,
+        configBackup,
         createdDirectories,
         installedThisRun,
-        patchPath,
-        snapshot,
         stateBackup,
       });
       process.stderr.write(
@@ -690,7 +715,7 @@ async function setup(options: {
         process.stderr.write(`FAIL Rollback: ${failure}\n`);
       return 1;
     } finally {
-      await rm(patchPath, { force: true });
+      await rm(candidatePath, { force: true });
     }
   } finally {
     prompt?.close();
@@ -754,10 +779,12 @@ async function uninstall(args: string[]): Promise<number> {
   let credentials: SetupCredentials;
   let installationState: InstallationState;
   let snapshot: ManagedSetupSnapshot;
+  let configBackup: ConfigFileSnapshot;
   try {
     credentials = await readSetupCredentials();
     installationState = await readInstallationState();
     snapshot = managedSetupSnapshot();
+    configBackup = await readActiveConfigFile();
   } catch (error) {
     process.stderr.write(
       `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
@@ -783,78 +810,70 @@ async function uninstall(args: string[]): Promise<number> {
     );
     return 1;
   }
-  const cleanupPath = join(
-    dirname(credentialsPath()),
-    'openclaw-container-uninstall-patch.json',
+  const candidatePath = join(
+    dirname(configBackup.path),
+    `.semantic-layer-uninstall-${process.pid}-${Date.now()}.json`,
   );
-  const cleanupPatch = {
-    secrets: { providers: { semantic_layer: null } },
-    plugins: { entries: { [PLUGIN_ID]: null } },
-  };
   try {
-    await writeOwnerFileAtomically(
-      cleanupPath,
-      `${JSON.stringify(cleanupPatch, null, 2)}\n`,
-    );
-    const patchArgs = [
-      'config',
-      'patch',
-      '--file',
-      cleanupPath,
-      '--replace-path',
-      `plugins.entries.${PLUGIN_ID}`,
-      '--replace-path',
-      'secrets.providers.semantic_layer',
-    ];
-    const dryRun = runOpenClaw([...patchArgs, '--dry-run']);
+    await writeUninstallConfigCandidate(configBackup, candidatePath);
+    const dryRun = runOpenClaw(['config', 'validate'], {
+      OPENCLAW_CONFIG_PATH: candidatePath,
+    });
     if (!dryRun.ok)
       throw new Error(
-        `OpenClaw config cleanup dry-run failed: ${dryRun.stderr || dryRun.stdout}`,
+        `OpenClaw config cleanup validation failed: ${dryRun.stderr || dryRun.stdout}`,
       );
     if (snapshot.plugin) {
-      const uninstallDryRun = runOpenClaw([
-        'plugins',
-        'uninstall',
-        PLUGIN_ID,
-        '--dry-run',
-      ]);
+      const uninstallDryRun = runOpenClaw(
+        ['plugins', 'uninstall', PLUGIN_ID, '--dry-run'],
+        { OPENCLAW_CONFIG_PATH: candidatePath },
+      );
       if (!uninstallDryRun.ok)
         throw new Error(
           `OpenClaw plugin uninstall dry-run failed: ${uninstallDryRun.stderr || uninstallDryRun.stdout}`,
         );
-      const uninstallResult = runOpenClaw([
-        'plugins',
-        'uninstall',
-        PLUGIN_ID,
-        '--force',
-      ]);
+      const uninstallResult = runOpenClaw(
+        ['plugins', 'uninstall', PLUGIN_ID, '--force'],
+        { OPENCLAW_CONFIG_PATH: candidatePath },
+      );
       if (!uninstallResult.ok)
         throw new Error(
           `OpenClaw plugin uninstall failed: ${uninstallResult.stderr || uninstallResult.stdout}`,
         );
     }
-    const patchResult = runOpenClaw(patchArgs);
-    if (!patchResult.ok)
+    await rm(candidatePath, { force: true });
+    const currentConfig = await readConfigFile(configBackup.path);
+    await writeUninstallConfigCandidate(currentConfig, candidatePath);
+    const finalValidation = runOpenClaw(['config', 'validate'], {
+      OPENCLAW_CONFIG_PATH: candidatePath,
+    });
+    if (!finalValidation.ok)
       throw new Error(
-        `OpenClaw config cleanup failed: ${patchResult.stderr || patchResult.stdout}`,
+        `OpenClaw config cleanup validation failed: ${finalValidation.stderr || finalValidation.stdout}`,
       );
-    const validate = runOpenClaw(['config', 'validate']);
-    if (!validate.ok)
-      throw new Error(
-        `OpenClaw config validation failed: ${validate.stderr || validate.stdout}`,
-      );
-    const preservedFailures = preservedConfigurationFailures(snapshot);
+    await installConfigCandidate(candidatePath, configBackup);
+    const installedConfig = await readConfigFile(configBackup.path);
+    const preservedFailures = preservedFileConfigurationFailures(
+      configBackup,
+      installedConfig,
+    );
     if (preservedFailures.length > 0)
       throw new Error(preservedFailures.join(' '));
     await rm(credentialsPath(), { force: true });
     await rm(installationStatePath(), { force: true });
   } catch (error) {
+    let restoreFailure = '';
+    try {
+      await restoreConfigFile(configBackup);
+    } catch (restoreError) {
+      restoreFailure = ` Config restore failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
+    }
     process.stderr.write(
-      `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+      `FAIL ${error instanceof Error ? error.message : String(error)}${restoreFailure}\n`,
     );
     return 1;
   } finally {
-    await rm(cleanupPath, { force: true });
+    await rm(candidatePath, { force: true });
   }
   const stateDirectory = managedStateDirectory();
   stdout.write('OK Semantic Layer was removed from OpenClaw.\n');
@@ -945,14 +964,17 @@ async function rotateIngestionKey(): Promise<number> {
   return 0;
 }
 
-export function runOpenClaw(args: string[]): {
+export function runOpenClaw(
+  args: string[],
+  environmentOverrides: NodeJS.ProcessEnv = {},
+): {
   ok: boolean;
   stdout: string;
   stderr: string;
 } {
   const result = spawnSync(process.env.OPENCLAW_BIN ?? 'openclaw', args, {
     encoding: 'utf8',
-    env: openClawChildEnvironment(),
+    env: { ...openClawChildEnvironment(), ...environmentOverrides },
     shell: false,
     timeout: commandTimeoutMs(args),
   });
@@ -1062,6 +1084,12 @@ type ManagedSetupSnapshot = {
   secretProvider: ConfigValueSnapshot;
 };
 
+type ConfigFileSnapshot = {
+  contents: Buffer;
+  mode: number;
+  path: string;
+};
+
 function configValueSnapshot(path: string): ConfigValueSnapshot {
   const result = runOpenClaw(['config', 'get', path, '--json']);
   if (!result.ok) {
@@ -1162,36 +1190,31 @@ function managedSetupSnapshot(): ManagedSetupSnapshot {
   };
 }
 
-function preservedConfigurationFailures(
-  before: ManagedSetupSnapshot,
+function preservedFileConfigurationFailures(
+  before: ConfigFileSnapshot,
+  after: ConfigFileSnapshot,
   preserveGateway = true,
 ): string[] {
+  const beforeConfig = parseConfigObject(before);
+  const afterConfig = parseConfigObject(after);
   const failures: string[] = [];
-  const gateway = configValueSnapshot('gateway');
-  if (preserveGateway && !sameConfigValue(before.gateway, gateway))
-    failures.push('Setup changed Gateway configuration.');
-  const entries = configValueSnapshot('plugins.entries');
   if (
-    canonicalJson(withoutManagedPlugin(before.pluginEntries)) !==
-    canonicalJson(withoutManagedPlugin(entries))
+    preserveGateway &&
+    canonicalJson(beforeConfig.gateway) !== canonicalJson(afterConfig.gateway)
+  )
+    failures.push('Setup changed Gateway configuration.');
+  if (
+    canonicalJson(withoutManagedPlugin(beforeConfig)) !==
+    canonicalJson(withoutManagedPlugin(afterConfig))
   ) {
     failures.push('Setup changed another plugin configuration entry.');
   }
   return failures;
 }
 
-function sameConfigValue(
-  left: ConfigValueSnapshot,
-  right: ConfigValueSnapshot,
-): boolean {
-  if (left.exists !== right.exists) return false;
-  if (!left.exists || !right.exists) return true;
-  return canonicalJson(left.value) === canonicalJson(right.value);
-}
-
-function withoutManagedPlugin(snapshot: ConfigValueSnapshot): unknown {
-  if (!snapshot.exists || !isRecord(snapshot.value)) return {};
-  const entries = { ...snapshot.value };
+function withoutManagedPlugin(config: Record<string, unknown>): unknown {
+  if (!isRecord(config.plugins) || !isRecord(config.plugins.entries)) return {};
+  const entries = { ...config.plugins.entries };
   delete entries[PLUGIN_ID];
   return entries;
 }
@@ -1314,6 +1337,186 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function readActiveConfigFile(): Promise<ConfigFileSnapshot> {
+  const active = runOpenClaw(['config', 'file']);
+  if (!active.ok || !active.stdout.trim())
+    throw new Error(
+      `OpenClaw config file lookup failed: ${active.stderr || active.stdout}`,
+    );
+  return readConfigFile(resolveUserPath(active.stdout.trim()));
+}
+
+async function readConfigFile(path: string): Promise<ConfigFileSnapshot> {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink())
+    throw new Error(`${path} must be a regular config file, not a link.`);
+  if (typeof process.getuid === 'function' && metadata.uid !== process.getuid())
+    throw new Error(`${path} must be owned by the current user.`);
+  return {
+    contents: await readFile(path),
+    mode: metadata.mode & 0o777,
+    path,
+  };
+}
+
+async function writeManagedConfigCandidate(
+  base: ConfigFileSnapshot,
+  patch: Record<string, unknown>,
+  candidatePath: string,
+): Promise<void> {
+  const config = parseConfigObject(base);
+  const secrets = requiredPatchObject(patch, 'secrets');
+  const providers = requiredPatchObject(secrets, 'providers');
+  const provider = requiredPatchObject(providers, 'semantic_layer');
+  const plugins = requiredPatchObject(patch, 'plugins');
+  const entries = requiredPatchObject(plugins, 'entries');
+  const pluginEntry = requiredPatchObject(entries, PLUGIN_ID);
+  setConfigValue(config, ['secrets', 'providers', 'semantic_layer'], provider);
+  setConfigValue(config, ['plugins', 'entries', PLUGIN_ID], pluginEntry);
+  if (isRecord(patch.gateway)) {
+    const gateway = ensureConfigObject(config, 'gateway', 'gateway');
+    Object.assign(gateway, patch.gateway);
+  }
+  await writeNewConfigFile(
+    candidatePath,
+    Buffer.from(`${JSON.stringify(config, null, 2)}\n`, 'utf8'),
+  );
+}
+
+async function writeUninstallConfigCandidate(
+  base: ConfigFileSnapshot,
+  candidatePath: string,
+): Promise<void> {
+  const config = parseConfigObject(base);
+  deleteConfigValue(config, ['secrets', 'providers', 'semantic_layer']);
+  deleteConfigValue(config, ['plugins', 'entries', PLUGIN_ID]);
+  await writeNewConfigFile(
+    candidatePath,
+    Buffer.from(`${JSON.stringify(config, null, 2)}\n`, 'utf8'),
+  );
+}
+
+function parseConfigObject(snapshot: ConfigFileSnapshot): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON5.parse(snapshot.contents.toString('utf8')) as unknown;
+  } catch (error) {
+    throw new Error(
+      `${snapshot.path} could not be parsed as OpenClaw JSON5: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!isRecord(value))
+    throw new Error(`${snapshot.path} must contain a config object.`);
+  return value;
+}
+
+function requiredPatchObject(
+  value: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const child = value[key];
+  if (!isRecord(child))
+    throw new Error(`Managed config patch is missing ${key}.`);
+  return child;
+}
+
+function ensureConfigObject(
+  parent: Record<string, unknown>,
+  key: string,
+  path: string,
+): Record<string, unknown> {
+  const existing = parent[key];
+  if (existing === undefined) {
+    const created: Record<string, unknown> = {};
+    parent[key] = created;
+    return created;
+  }
+  if (!isRecord(existing))
+    throw new Error(`OpenClaw config path ${path} must be an object.`);
+  return existing;
+}
+
+function setConfigValue(
+  root: Record<string, unknown>,
+  path: string[],
+  value: unknown,
+): void {
+  let parent = root;
+  for (const [index, key] of path.slice(0, -1).entries()) {
+    parent = ensureConfigObject(
+      parent,
+      key ?? '',
+      path.slice(0, index + 1).join('.'),
+    );
+  }
+  const leaf = path.at(-1);
+  if (!leaf) throw new Error('Managed config path must not be empty.');
+  parent[leaf] = value;
+}
+
+function deleteConfigValue(
+  root: Record<string, unknown>,
+  path: string[],
+): void {
+  let parent = root;
+  for (const key of path.slice(0, -1)) {
+    const child = parent[key];
+    if (child === undefined) return;
+    if (!isRecord(child))
+      throw new Error(`OpenClaw config path ${path.join('.')} is invalid.`);
+    parent = child;
+  }
+  const leaf = path.at(-1);
+  if (leaf) delete parent[leaf];
+}
+
+async function writeNewConfigFile(path: string, contents: Buffer): Promise<void> {
+  const handle = await open(path, 'wx', 0o600);
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function installConfigCandidate(
+  candidatePath: string,
+  original: ConfigFileSnapshot,
+): Promise<void> {
+  await chmod(candidatePath, original.mode);
+  await rename(candidatePath, original.path);
+  await syncConfigDirectory(dirname(original.path));
+}
+
+async function restoreConfigFile(original: ConfigFileSnapshot): Promise<void> {
+  const restorePath = join(
+    dirname(original.path),
+    `.semantic-layer-restore-${process.pid}-${Date.now()}.json`,
+  );
+  try {
+    await writeNewConfigFile(restorePath, original.contents);
+    await chmod(restorePath, original.mode);
+    await rename(restorePath, original.path);
+    await syncConfigDirectory(dirname(original.path));
+  } finally {
+    await rm(restorePath, { force: true });
+  }
+}
+
+async function syncConfigDirectory(path: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, 'r');
+    await handle.sync();
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? '';
+    if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(code)) throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
 async function inspectSpoolDirectory(
   root: string,
 ): Promise<{ ok: true; bytes: number } | { ok: false; error: string }> {
@@ -1355,66 +1558,37 @@ async function inspectSpoolDirectory(
 
 async function rollbackManagedSetup(input: {
   credentialBackup: Buffer | undefined;
+  configBackup: ConfigFileSnapshot;
   createdDirectories: string[];
   installedThisRun: boolean;
-  patchPath: string;
-  snapshot: ManagedSetupSnapshot;
   stateBackup: Buffer | undefined;
 }): Promise<string[]> {
   const failures: string[] = [];
   if (input.installedThisRun) {
-    const uninstallResult = runOpenClaw([
-      'plugins',
-      'uninstall',
-      PLUGIN_ID,
-      '--force',
-    ]);
-    if (!uninstallResult.ok)
-      failures.push(
-        `Plugin uninstall failed: ${uninstallResult.stderr || uninstallResult.stdout}`,
+    const cleanupPath = join(
+      dirname(input.configBackup.path),
+      `.semantic-layer-rollback-config-${process.pid}-${Date.now()}.json`,
+    );
+    try {
+      await writeUninstallConfigCandidate(input.configBackup, cleanupPath);
+      const uninstallResult = runOpenClaw(
+        ['plugins', 'uninstall', PLUGIN_ID, '--force'],
+        { OPENCLAW_CONFIG_PATH: cleanupPath },
       );
+      if (!uninstallResult.ok)
+        failures.push(
+          `Plugin uninstall failed: ${uninstallResult.stderr || uninstallResult.stdout}`,
+        );
+    } catch (error) {
+      failures.push(
+        `Plugin uninstall failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      await rm(cleanupPath, { force: true });
+    }
   }
   try {
-    const rollbackPath = join(
-      managedStateDirectory(),
-      `.semantic-layer-rollback-${process.pid}-${Date.now()}.json`,
-    );
-    const patch = {
-      gateway: input.snapshot.gateway.exists
-        ? input.snapshot.gateway.value
-        : null,
-      secrets: input.snapshot.secrets.exists
-        ? input.snapshot.secrets.value
-        : null,
-      plugins: {
-        entries: {
-          [PLUGIN_ID]: input.snapshot.pluginEntry.exists
-            ? input.snapshot.pluginEntry.value
-            : null,
-        },
-      },
-    };
-    await writeOwnerFileAtomically(
-      rollbackPath,
-      `${JSON.stringify(patch, null, 2)}\n`,
-    );
-    const result = runOpenClaw([
-      'config',
-      'patch',
-      '--file',
-      rollbackPath,
-      '--replace-path',
-      `plugins.entries.${PLUGIN_ID}`,
-      '--replace-path',
-      'secrets',
-      '--replace-path',
-      'gateway',
-    ]);
-    await rm(rollbackPath, { force: true });
-    if (!result.ok)
-      failures.push(
-        `Config restore failed: ${result.stderr || result.stdout}`,
-      );
+    await restoreConfigFile(input.configBackup);
   } catch (error) {
     failures.push(
       `Config restore failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1450,13 +1624,6 @@ async function rollbackManagedSetup(input: {
           `Directory cleanup failed for ${directory}: ${error instanceof Error ? error.message : String(error)}`,
         );
     }
-  }
-  try {
-    failures.push(...preservedConfigurationFailures(input.snapshot));
-  } catch (error) {
-    failures.push(
-      `Post-rollback configuration check failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
   }
   return failures;
 }
@@ -1900,28 +2067,11 @@ export function installationIdOption(
 
 export function setupCommandPlan(
   packageSpec: string,
-  patchPath: string,
   mode: SetupMode = 'service',
 ): string[][] {
-  const replacePaths = [
-    '--replace-path',
-    `plugins.entries.${PLUGIN_ID}`,
-    '--replace-path',
-    'secrets.providers.semantic_layer',
-  ];
   const commands = [
     pluginInstallCommand(packageSpec),
-    [
-      'config',
-      'patch',
-      '--file',
-      patchPath,
-      ...replacePaths,
-      '--dry-run',
-    ],
-    ['config', 'patch', '--file', patchPath, ...replacePaths],
     ['config', 'validate'],
-    ['secrets', 'audit', '--check'],
   ];
   if (mode === 'service')
     commands.push(
@@ -1938,10 +2088,7 @@ function pluginInstallCommand(packageSpec: string): string[] {
 }
 
 export function doctorCommandPlan(container = false): string[][] {
-  const commands = [
-    ['config', 'validate'],
-    ['secrets', 'audit', '--check'],
-  ];
+  const commands = [['config', 'validate']];
   if (container) commands.push(['gateway', 'health', '--json']);
   else
     commands.push(
