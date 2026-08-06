@@ -243,6 +243,12 @@ describe('client setup command contract', () => {
     expect(installationIdOption(['--installation-id', requested])).toBe(
       requested,
     );
+    expect(
+      installationIdOption([
+        '--installation-id',
+        'install_AbCdEfGhIjKlMnOpQrStUv',
+      ]),
+    ).toBe('install_AbCdEfGhIjKlMnOpQrStUv');
     expect(() => installationIdOption(['--installation-id'])).toThrow(
       /requires a value/u,
     );
@@ -551,16 +557,19 @@ describe('client setup command contract', () => {
         : new Response('{"error":"UNAUTHENTICATED"}', { status: 401 });
     try {
       await expect(
-        main([
-          'setup',
-          '--container',
-          '--endpoint',
-          'https://ingest.example.test',
-          '--service-name',
-          'customer-openclaw-vm-01',
-          '--installation-id',
-          'install_0123456789abcdef0123456789abcdef',
-        ]),
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            'https://ingest.example.test',
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            'install_0123456789abcdef0123456789abcdef',
+          ],
+          { readSetupIngestKey: async () => 'wrong-ingest-key' },
+        ),
       ).resolves.toBe(1);
       expect(await readFile(configPath, 'utf8')).toBe(initialConfig);
       await expect(lstat(join(directory, 'semantic-layer'))).rejects.toMatchObject(
@@ -587,6 +596,12 @@ describe('client setup command contract', () => {
     const spoolDirectory = join(directory, 'semantic-layer', 'cloud-spool');
     const openClawConfigPath = join(directory, 'openclaw.json');
     const pluginMarker = join(directory, 'plugin-installed');
+    const pluginInstallPath = join(
+      directory,
+      'npm',
+      'node_modules',
+      'semantic-layer-openclaw',
+    );
     const installCountPath = join(directory, 'plugin-install-count');
     const verifiedInstallationIds: string[] = [];
     const latitudeEntry = {
@@ -609,15 +624,15 @@ describe('client setup command contract', () => {
       executable,
       [
         '#!/usr/bin/env node',
-        "import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';",
+        "import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';",
         "if (process.env.SEMANTIC_LAYER_INGEST_KEY || process.env.SEMANTIC_LAYER_IDENTITY_KEY) process.exit(23);",
         'const args = process.argv.slice(2);',
         'const merge = (left, right) => { for (const [key, value] of Object.entries(right)) { if (value === null) delete left[key]; else left[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(left[key] && typeof left[key] === "object" && !Array.isArray(left[key]) ? left[key] : {}, value) : value; } return left; };',
         'const get = (root, path) => path.split(".").reduce((value, key) => value && typeof value === "object" ? value[key] : undefined, root);',
-        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.2' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.2', installPath: '/customer/.openclaw/npm/node_modules/semantic-layer-openclaw', source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.2' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
+        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.2' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.2', installPath: pluginInstallPath, source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.2' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
         "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
         "else if (args[0] === 'plugins' && args[1] === 'inspect') { if (!existsSync(process.env.PLUGIN_MARKER)) { process.stderr.write('Plugin not found: semantic-layer-openclaw\\n'); process.exitCode = 1; } else process.stdout.write(JSON.stringify(report)); }",
-        "else if (args[0] === 'plugins' && args[1] === 'install') { writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); }",
+        "else if (args[0] === 'plugins' && args[1] === 'install') { mkdirSync(report.install.installPath, { recursive: true }); writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); }",
         "else if (args[0] === 'plugins' && args[1] === 'uninstall' && !args.includes('--dry-run')) { if (existsSync(process.env.PLUGIN_MARKER)) unlinkSync(process.env.PLUGIN_MARKER); const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); if (current.plugins?.entries) delete current.plugins.entries['semantic-layer-openclaw']; writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(current)); }",
         "else if (args[0] === 'config' && args[1] === 'validate' && process.env.FAIL_CONFIG_VALIDATE === '1') { process.stderr.write('injected config validation failure\\n'); process.exitCode = 1; }",
         "else if (args[0] === 'security' && args[1] === 'audit') process.stdout.write(JSON.stringify({ summary: { critical: 0 } }));",
@@ -665,16 +680,19 @@ describe('client setup command contract', () => {
       const originalConfig = await readFile(openClawConfigPath, 'utf8');
       process.env.FAIL_CONFIG_VALIDATE = '1';
       await expect(
-        main([
-          'setup',
-          '--container',
-          '--endpoint',
-          endpoint,
-          '--service-name',
-          'customer-openclaw-vm-01',
-          '--installation-id',
-          installationId,
-        ]),
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            endpoint,
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            installationId,
+          ],
+          { readSetupIngestKey: async () => 'ingest-secret' },
+        ),
       ).resolves.toBe(1);
       expect(await readFile(openClawConfigPath, 'utf8')).toBe(originalConfig);
       await expect(lstat(pluginMarker)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -685,16 +703,19 @@ describe('client setup command contract', () => {
       process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
       process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'i'.repeat(64);
       await expect(
-        main([
-          'setup',
-          '--container',
-          '--endpoint',
-          endpoint,
-          '--service-name',
-          'customer-openclaw-vm-01',
-          '--installation-id',
-          installationId,
-        ]),
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            endpoint,
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            installationId,
+          ],
+          { readSetupIngestKey: async () => 'ingest-secret' },
+        ),
       ).resolves.toBe(0);
       const credentialPath = join(
         directory,
@@ -703,7 +724,7 @@ describe('client setup command contract', () => {
       );
       expect(JSON.parse(await readFile(credentialPath, 'utf8'))).toEqual({
         ingestKey: 'ingest-secret',
-        identityKey: 'i'.repeat(64),
+        identityKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         installationId,
       });
       expect((await lstat(credentialPath)).mode & 0o077).toBe(0);
@@ -740,23 +761,68 @@ describe('client setup command contract', () => {
         installationId,
         pluginPackage: 'semantic-layer-openclaw',
         pluginVersion: '0.1.0-pilot.2',
+        preservedEnabledPluginIds: ['latitude'],
         serviceName: 'customer-openclaw-vm-01',
         setupMode: 'container',
       });
       await expect(main(['doctor', '--container'])).resolves.toBe(0);
       process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
       await expect(
-        main([
-          'setup',
-          '--container',
-          '--endpoint',
-          endpoint,
-          '--service-name',
-          'customer-openclaw-vm-01',
-          '--installation-id',
-          installationId,
-        ]),
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            endpoint,
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            installationId,
+          ],
+          { readSetupIngestKey: async () => 'ingest-secret' },
+        ),
       ).resolves.toBe(0);
+      expect(await readFile(installCountPath, 'utf8')).toBe('2');
+
+      const installationStateFile = join(
+        directory,
+        'semantic-layer',
+        'installation.json',
+      );
+      await rm(installationStateFile);
+      await expect(
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            endpoint,
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            installationId,
+          ],
+          { readSetupIngestKey: async () => 'ingest-secret' },
+        ),
+      ).resolves.toBe(0);
+      expect((await lstat(installationStateFile)).isFile()).toBe(true);
+      await rm(credentialPath);
+      await expect(
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            endpoint,
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            installationId,
+          ],
+          { readSetupIngestKey: async () => 'ingest-secret' },
+        ),
+      ).resolves.toBe(0);
+      expect((await lstat(credentialPath)).mode & 0o077).toBe(0);
       expect(await readFile(installCountPath, 'utf8')).toBe('2');
 
       const localTrace = join(

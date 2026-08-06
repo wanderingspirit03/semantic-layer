@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
@@ -13,7 +14,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
@@ -49,7 +50,10 @@ export const REQUIRED_PLUGIN_HOOKS = [
   'gateway_stop',
 ] as const;
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+export async function main(
+  argv = process.argv.slice(2),
+  testOptions: { readSetupIngestKey?: () => Promise<string> } = {},
+): Promise<number> {
   const command = argv[0] ?? 'help';
   const args = argv.slice(1);
   try {
@@ -71,7 +75,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === 'uninstall') return uninstall(args);
   if (command === 'dry-run') return setup({ dryRun: true });
   if (command === 'setup')
-    return setup({ dryRun: argv.includes('--dry-run'), args: argv.slice(1) });
+    return setup({
+      dryRun: argv.includes('--dry-run'),
+      args: argv.slice(1),
+      ...(testOptions.readSetupIngestKey
+        ? { readIngestKey: testOptions.readSetupIngestKey }
+        : {}),
+    });
   process.stderr.write(`Unknown command: ${command}\n\n${helpText()}`);
   return 2;
 }
@@ -167,6 +177,10 @@ async function doctor(options: { container: boolean }): Promise<number> {
         failures.push(
           `Installed plugin must be ${PLUGIN_PACKAGE}@${PLUGIN_VERSION}.`,
         );
+      else {
+        const pluginPathFailure = await installedPluginPathFailure(installed);
+        if (pluginPathFailure) failures.push(pluginPathFailure);
+      }
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error));
     }
@@ -305,6 +319,17 @@ async function doctor(options: { container: boolean }): Promise<number> {
       if (!result.ok || result.stdout.trim() !== 'true')
         failures.push(`Effective ${label} configuration must be true.`);
     }
+    for (const pluginId of installationState?.preservedEnabledPluginIds ?? []) {
+      const result = runOpenClaw([
+        'config',
+        'get',
+        `plugins.entries.${pluginId}.enabled`,
+      ]);
+      if (!result.ok || result.stdout.trim() !== 'true')
+        failures.push(
+          `Plugin ${pluginId} was enabled before Semantic Layer setup and must remain enabled.`,
+        );
+    }
     if (endpoint) {
       const health = await cloudHealth(endpoint);
       if (!health.ok)
@@ -362,6 +387,7 @@ export function doctorQualificationDescription(
 async function setup(options: {
   dryRun: boolean;
   args?: string[];
+  readIngestKey?: () => Promise<string>;
 }): Promise<number> {
   const mode: SetupMode = options.args?.includes('--container')
     ? 'container'
@@ -457,18 +483,20 @@ async function setup(options: {
         return 1;
       }
     }
-    if (!existingCredentials && !requestedInstallationId) {
+    const assignedInstallationId =
+      requestedInstallationId ??
+      existingCredentials?.installationId ??
+      existingInstallationState?.installationId;
+    if (!assignedInstallationId) {
       process.stderr.write(
         'FAIL First setup requires --installation-id with the ID assigned to this host.\n',
       );
       return 2;
     }
-    const configuredSecrets = consumeSetupSecretEnvironment();
     prompt?.close();
     prompt = undefined;
-    const ingestKey =
-      configuredSecrets.ingestKey ??
-      (await hiddenQuestion('Ingestion key (hidden): '));
+    const ingestKey = await (options.readIngestKey ??
+      (() => hiddenQuestion('Ingestion key (hidden): ')))();
     if (!ingestKey) {
       process.stderr.write(
         'An ingestion key is required and identity key must contain 32+ characters. Secrets are never accepted on command lines.\n',
@@ -480,8 +508,8 @@ async function setup(options: {
       credentials = createManagedSetupCredentials(
         ingestKey,
         existingCredentials,
-        configuredSecrets.identityKey,
-        requestedInstallationId,
+        undefined,
+        assignedInstallationId,
       );
     } catch (error) {
       process.stderr.write(
@@ -527,12 +555,6 @@ async function setup(options: {
       'semantic-layer',
       'cloud-spool',
     );
-    const requestedState = createInstallationState({
-      endpoint,
-      installationId: credentials.installationId,
-      serviceName,
-      mode,
-    });
     const patchPath = join(
       dirname(credentialPath),
       'openclaw-config-patch.json',
@@ -546,6 +568,15 @@ async function setup(options: {
       );
       return 1;
     }
+    const requestedState = createInstallationState({
+      endpoint,
+      installationId: credentials.installationId,
+      preservedEnabledPluginIds:
+        existingInstallationState?.preservedEnabledPluginIds ??
+        enabledOtherPluginIds(snapshot.pluginEntries),
+      serviceName,
+      mode,
+    });
     const ownershipFailures = managedOwnershipFailures({
       credentials: existingCredentials,
       installationState: existingInstallationState,
@@ -586,6 +617,11 @@ async function setup(options: {
           );
         }
       }
+      const finalPlugin = inspectInstalledPlugin();
+      if (!finalPlugin)
+        throw new Error('Semantic Layer plugin package is not installed.');
+      const pluginPathFailure = await installedPluginPathFailure(finalPlugin);
+      if (pluginPathFailure) throw new Error(pluginPathFailure);
 
       for (const directory of [
         dirname(credentialPath),
@@ -625,10 +661,13 @@ async function setup(options: {
             throw new Error(securityFailures.join(' '));
         }
       }
-      const preservedFailures = preservedConfigurationFailures(snapshot);
+      const preservedFailures = preservedConfigurationFailures(
+        snapshot,
+        mode === 'container',
+      );
       if (preservedFailures.length > 0)
         throw new Error(preservedFailures.join(' '));
-      stdout.write(`Plugin: ${inspectInstalledPlugin()?.installPath ?? 'installed'}\n`);
+      stdout.write(`Plugin: ${finalPlugin.installPath ?? 'installed'}\n`);
       stdout.write(`Credentials: ${credentialPath}\n`);
       stdout.write(`Local traces: ${outputDirectory}\n`);
       stdout.write(`Durable upload spool: ${spoolDirectory}\n`);
@@ -1087,6 +1126,31 @@ function inspectInstalledPlugin(): InstalledPlugin | undefined {
   };
 }
 
+async function installedPluginPathFailure(
+  installed: InstalledPlugin,
+): Promise<string | undefined> {
+  if (!installed.installPath || !isAbsolute(installed.installPath))
+    return 'Installed plugin path is missing or is not absolute.';
+  try {
+    const [stateRoot, installPath] = await Promise.all([
+      realpath(managedStateDirectory()),
+      realpath(installed.installPath),
+    ]);
+    const child = relative(stateRoot, installPath);
+    if (
+      child === '' ||
+      child === '..' ||
+      child.startsWith(`..${sep}`) ||
+      isAbsolute(child)
+    ) {
+      return `Installed plugin must be under the persistent OpenClaw state directory ${stateRoot}.`;
+    }
+  } catch (error) {
+    return `Installed plugin path could not be verified: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return undefined;
+}
+
 function managedSetupSnapshot(): ManagedSetupSnapshot {
   return {
     gateway: configValueSnapshot('gateway'),
@@ -1100,10 +1164,11 @@ function managedSetupSnapshot(): ManagedSetupSnapshot {
 
 function preservedConfigurationFailures(
   before: ManagedSetupSnapshot,
+  preserveGateway = true,
 ): string[] {
   const failures: string[] = [];
   const gateway = configValueSnapshot('gateway');
-  if (!sameConfigValue(before.gateway, gateway))
+  if (preserveGateway && !sameConfigValue(before.gateway, gateway))
     failures.push('Setup changed Gateway configuration.');
   const entries = configValueSnapshot('plugins.entries');
   if (
@@ -1146,6 +1211,7 @@ function createInstallationState(input: {
   endpoint: string;
   installationId: string;
   mode: SetupMode;
+  preservedEnabledPluginIds: string[];
   serviceName: string;
 }): InstallationState {
   return {
@@ -1155,9 +1221,24 @@ function createInstallationState(input: {
     maxSpoolBytes: DEFAULT_OPENCLAW_SPOOL_BYTES,
     pluginPackage: PLUGIN_PACKAGE,
     pluginVersion: PLUGIN_VERSION,
+    preservedEnabledPluginIds: input.preservedEnabledPluginIds,
     serviceName: input.serviceName,
     setupMode: input.mode,
   };
+}
+
+function enabledOtherPluginIds(snapshot: ConfigValueSnapshot): string[] {
+  if (!snapshot.exists || !isRecord(snapshot.value)) return [];
+  return Object.entries(snapshot.value)
+    .filter(
+      ([pluginId, entry]) =>
+        pluginId !== PLUGIN_ID &&
+        /^[A-Za-z0-9._-]+$/u.test(pluginId) &&
+        isRecord(entry) &&
+        entry.enabled === true,
+    )
+    .map(([pluginId]) => pluginId)
+    .sort();
 }
 
 function managedOwnershipFailures(input: {
@@ -1167,12 +1248,10 @@ function managedOwnershipFailures(input: {
   snapshot: ManagedSetupSnapshot;
 }): string[] {
   const failures: string[] = [];
-  const owned = input.installationState !== undefined;
-  if (Boolean(input.credentials) !== owned)
-    failures.push(
-      'Credentials and installation state must either both exist or both be absent.',
-    );
-  if (owned) {
+  const hasOwnerState = Boolean(
+    input.credentials || input.installationState,
+  );
+  if (input.installationState) {
     if (
       canonicalJson(input.installationState) !==
       canonicalJson(input.requestedState)
@@ -1182,14 +1261,24 @@ function managedOwnershipFailures(input: {
       );
     }
     if (
-      input.credentials?.installationId !==
-      input.installationState?.installationId
+      input.credentials &&
+      input.credentials.installationId !==
+        input.installationState.installationId
     ) {
       failures.push(
         'Existing credentials do not match existing installation state.',
       );
     }
-  } else {
+  }
+  if (
+    input.credentials &&
+    input.credentials.installationId !== input.requestedState.installationId
+  ) {
+    failures.push(
+      'Existing credentials do not match the requested installation ID.',
+    );
+  }
+  if (!hasOwnerState) {
     if (input.snapshot.plugin)
       failures.push(
         'The Semantic Layer plugin already exists without managed installation state.',
@@ -1291,6 +1380,9 @@ async function rollbackManagedSetup(input: {
       `.semantic-layer-rollback-${process.pid}-${Date.now()}.json`,
     );
     const patch = {
+      gateway: input.snapshot.gateway.exists
+        ? input.snapshot.gateway.value
+        : null,
       secrets: input.snapshot.secrets.exists
         ? input.snapshot.secrets.value
         : null,
@@ -1315,6 +1407,8 @@ async function rollbackManagedSetup(input: {
       `plugins.entries.${PLUGIN_ID}`,
       '--replace-path',
       'secrets',
+      '--replace-path',
+      'gateway',
     ]);
     await rm(rollbackPath, { force: true });
     if (!result.ok)
@@ -1382,6 +1476,7 @@ type InstallationState = {
   maxSpoolBytes: number;
   pluginPackage: typeof PLUGIN_PACKAGE;
   pluginVersion: typeof PLUGIN_VERSION;
+  preservedEnabledPluginIds: string[];
   serviceName: string;
   setupMode: SetupMode;
 };
@@ -1409,7 +1504,7 @@ export function createManagedSetupCredentials(
     !isInstallationId(requestedInstallationId)
   ) {
     throw new TypeError(
-      'Requested installation ID must use the install_ prefix followed by 32 lowercase hexadecimal characters.',
+      'Requested installation ID must use the install_ prefix followed by 22 to 128 letters, numbers, underscores, or hyphens.',
     );
   }
   if (
@@ -1579,6 +1674,15 @@ async function readInstallationState(): Promise<InstallationState> {
     value.maxSpoolBytes !== DEFAULT_OPENCLAW_SPOOL_BYTES ||
     value.pluginPackage !== PLUGIN_PACKAGE ||
     value.pluginVersion !== PLUGIN_VERSION ||
+    !Array.isArray(value.preservedEnabledPluginIds) ||
+    !value.preservedEnabledPluginIds.every(
+      (pluginId) =>
+        typeof pluginId === 'string' &&
+        pluginId !== PLUGIN_ID &&
+        /^[A-Za-z0-9._-]+$/u.test(pluginId),
+    ) ||
+    new Set(value.preservedEnabledPluginIds).size !==
+      value.preservedEnabledPluginIds.length ||
     typeof value.serviceName !== 'string' ||
     !value.serviceName ||
     (value.setupMode !== 'service' && value.setupMode !== 'container')
@@ -1788,7 +1892,7 @@ export function installationIdOption(
   const trimmed = value.trim();
   if (!isInstallationId(trimmed)) {
     throw new TypeError(
-      '--installation-id must use the install_ prefix followed by 32 lowercase hexadecimal characters.',
+      '--installation-id must use the install_ prefix followed by 22 to 128 letters, numbers, underscores, or hyphens.',
     );
   }
   return trimmed;
@@ -1856,7 +1960,7 @@ export function generateInstallationId(): string {
 }
 
 function isInstallationId(value: string): boolean {
-  return /^install_[a-f0-9]{32}$/u.test(value);
+  return /^install_[A-Za-z0-9_-]{22,128}$/u.test(value);
 }
 
 export function packageInstallSpec(

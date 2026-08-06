@@ -3,7 +3,7 @@
 `semantic-layer-cloud` queues sealed Semantic Trace bundles on local disk and
 uploads their exact bytes. It works with manifest v1 and v2 bundles that use
 trace record schema v1. The package requires Node.js 22, Node.js 24, or
-Node.js 25.9 and newer.
+Node.js 25.9 or later.
 
 ## Install
 
@@ -38,6 +38,12 @@ The source bundle is not changed. A returned `pending` state means the complete
 bundle is in durable pending storage. A returned `acked` state means a matching
 acknowledgement receipt already exists. An `awaiting_spool_admission` state does
 not authorize the caller to remove its source bundle.
+
+A host adapter that owns a dedicated trace output directory can pass
+`removeSourceAfterAdmissionFrom` to `enqueueArtifact()`. The uploader then
+removes only a direct, regular child of that directory, and only after a
+complete pending copy or matching acknowledgement exists. Unsafe paths,
+staging failures, and a full spool leave the source bundle in place.
 
 `flush()` uploads pending bundles until the deadline. `status()` returns bundle
 and byte counts, spool pressure, the oldest pending bundle, retry state,

@@ -628,6 +628,56 @@ describe('semantic-layer-cloud', () => {
     await uploader.shutdown();
   });
 
+  it('removes an admitted source only when its owner transfers cleanup to the uploader', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-source-'));
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+
+    const queued = await uploader.enqueueArtifact(artifact, {
+      removeSourceAfterAdmissionFrom: root,
+    });
+
+    expect(queued.state).toBe('pending');
+    await expect(stat(artifact)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(
+      await stat(
+        join(root, 'spool', 'pending', queued.bundleDigest, 'bundle'),
+      ),
+    ).toBeDefined();
+    await uploader.shutdown();
+  });
+
+  it('retains a source when a cleanup root does not own that direct child', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-source-'));
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const unrelatedRoot = join(root, 'unrelated');
+    await mkdir(unrelatedRoot);
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+
+    await uploader.enqueueArtifact(artifact, {
+      removeSourceAfterAdmissionFrom: unrelatedRoot,
+    });
+
+    expect((await stat(artifact)).isDirectory()).toBe(true);
+    await uploader.shutdown();
+  });
+
   it('compacts a legacy acknowledged bundle after restart', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'semantic-layer-cloud-acked-retention-'),
@@ -707,7 +757,12 @@ describe('semantic-layer-cloud', () => {
     await rename(join(spoolDirectory, 'pending', digest), acknowledged);
     await writeFile(
       join(acknowledged, 'receipt.json'),
-      '{"status":"acknowledged","bundle_digest":"wrong"}\n',
+      `${JSON.stringify({
+        status: 'acknowledged',
+        bundle_id: 'wrong_bundle_id',
+        bundle_digest: digest,
+        acknowledged_at: new Date().toISOString(),
+      })}\n`,
       { mode: 0o600 },
     );
 

@@ -90,10 +90,15 @@ describe('persisted OpenClaw capture', () => {
         {
           createRunCapture: createCapture,
           createUploader: () => ({
-            async enqueueArtifact(path: string) {
+            async enqueueArtifact(
+              path: string,
+              options?: { removeSourceAfterAdmissionFrom?: string },
+            ) {
               sourceArtifactPath = path;
               artifactPath = join(staged, 'bundle');
               await cp(path, artifactPath, { recursive: true });
+              if (options?.removeSourceAfterAdmissionFrom === output)
+                await rm(path, { recursive: true, force: true });
               return {
                 bundleId: 'bundle',
                 bundleDigest: 'digest',
@@ -396,10 +401,15 @@ describe('persisted OpenClaw capture', () => {
         {
           createRunCapture: createCapture,
           createUploader: () => ({
-            async enqueueArtifact(path: string) {
+            async enqueueArtifact(
+              path: string,
+              options?: { removeSourceAfterAdmissionFrom?: string },
+            ) {
               sourceArtifactPath = path;
               artifactPath = join(staged, 'bundle');
               await cp(path, artifactPath, { recursive: true });
+              if (options?.removeSourceAfterAdmissionFrom === output)
+                await rm(path, { recursive: true, force: true });
               return {
                 bundleId: 'bundle',
                 bundleDigest: 'digest',

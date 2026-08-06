@@ -13,8 +13,7 @@ Node.js support follows the OpenClaw release. OpenClaw releases before
 on Node 24. Releases from `2026.5.12` need Node.js 22.16.0 or later. Releases
 from `2026.5.18` need Node.js 22.19.0 or later. Releases from `2026.7.1` need
 Node.js 22.22.3 or later on Node 22, or Node.js 24.15.0 or later on Node 24.
-Node.js 25 is supported from 25.9.0. Other major Node.js versions are not
-supported by this pilot.
+Node.js 25.9.0 or later is also supported by the package contract.
 
 ## Values you need
 
@@ -88,10 +87,12 @@ After Gateway is healthy, run:
 npx -y semantic-layer-openclaw-setup@0.1.0-pilot.4 doctor --container
 ```
 
-Doctor is read only. It checks the pinned plugin identity, plugin hooks,
+Doctor is read only. It checks the pinned plugin identity, persistent plugin
+location, plugin hooks,
 credentials, installation state, file permissions, endpoint authentication,
-local spool, and the running Gateway. It does not require a local bind or
-service manager, and it does not create a trace.
+local spool, the plugins that were enabled before setup, and the running
+Gateway. It does not require a local bind or service manager, and it does not
+create a trace.
 
 The final success line is:
 
@@ -112,6 +113,10 @@ The task must finish normally. Run doctor again and send the installation ID
 to the Arcus pilot contact. Arcus confirms that the complete bundle arrived for
 that installation. The OpenClaw installation cannot read the managed cloud
 bucket directly.
+
+For this pilot, Nick at Arcus confirms the first trace and handles setup
+failures through the existing shared pilot channel. Send the command output and
+installation ID. Never send the ingestion key.
 
 Semantic Layer captures the prompts, model responses, provider exposed
 reasoning, tool inputs, tool results, usage, errors, and run relationships that

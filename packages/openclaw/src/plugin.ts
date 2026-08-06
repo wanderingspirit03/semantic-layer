@@ -1,6 +1,4 @@
 import { createHmac } from 'node:crypto';
-import { lstat, realpath, rm } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
 import type {
   OpenClawPluginApi,
   OpenClawPluginDefinition,
@@ -1196,6 +1194,12 @@ class CaptureRuntime {
         try {
           const receipt = await this.getUploader().enqueueArtifact(
             status.artifactPath,
+            this.config?.outputDirectory
+              ? {
+                  removeSourceAfterAdmissionFrom:
+                    this.config.outputDirectory,
+                }
+              : undefined,
           );
           if (receipt.state === 'awaiting_spool_admission') {
             this.logOnce(
@@ -1203,15 +1207,6 @@ class CaptureRuntime {
               'error',
               `Semantic Layer spool is full; the sealed capture for run ${run.runId} is awaiting local spool admission. The agent was unaffected.`,
             );
-          } else {
-            try {
-              await this.removeDurablyStagedArtifact(status.artifactPath);
-            } catch (error) {
-              this.logError(
-                `durably staged capture could not be removed for run ${run.runId}; upload will continue from the spool and the extra local copy was retained`,
-                error,
-              );
-            }
           }
         } catch (error) {
           this.logError(
@@ -1230,24 +1225,6 @@ class CaptureRuntime {
       owners?.delete(run.runId);
       if (owners?.size === 0) this.sessionOwners.delete(sessionKey);
     }
-  }
-
-  private async removeDurablyStagedArtifact(
-    artifactPath: string,
-  ): Promise<void> {
-    const outputDirectory = this.config?.outputDirectory;
-    if (!outputDirectory)
-      throw new Error('capture output directory is not configured');
-    const metadata = await lstat(artifactPath);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink())
-      throw new Error('sealed capture path is not a regular directory');
-    const [outputRoot, artifact] = await Promise.all([
-      realpath(resolve(outputDirectory)),
-      realpath(resolve(artifactPath)),
-    ]);
-    if (dirname(artifact) !== outputRoot)
-      throw new Error('sealed capture path is outside the capture output root');
-    await rm(artifactPath, { recursive: true, force: true });
   }
 
   private reasoningLimitGap(run: Run): void {

@@ -57,6 +57,10 @@ export type EnqueueReceipt = {
   state: 'pending' | 'acked' | 'awaiting_spool_admission';
 };
 
+export type EnqueueOptions = {
+  removeSourceAfterAdmissionFrom?: string;
+};
+
 export type UploadFailure = {
   bundleDigest: string;
   code: string;
@@ -103,7 +107,10 @@ export type FlushResult = CloudUploaderStatus & {
 };
 
 export interface CloudUploader {
-  enqueueArtifact(sealedArtifactPath: string): Promise<EnqueueReceipt>;
+  enqueueArtifact(
+    sealedArtifactPath: string,
+    options?: EnqueueOptions,
+  ): Promise<EnqueueReceipt>;
   flush(options: FlushOptions): Promise<FlushResult>;
   status(): CloudUploaderStatus;
   shutdown(): Promise<void>;
@@ -319,9 +326,12 @@ class SharedCloudUploaderLease implements CloudUploader {
     private readonly registry: Map<string, SharedUploaderEntry>,
   ) {}
 
-  enqueueArtifact(sealedArtifactPath: string): Promise<EnqueueReceipt> {
+  enqueueArtifact(
+    sealedArtifactPath: string,
+    options?: EnqueueOptions,
+  ): Promise<EnqueueReceipt> {
     this.assertRunning();
-    return this.entry.core.enqueueArtifact(sealedArtifactPath);
+    return this.entry.core.enqueueArtifact(sealedArtifactPath, options);
   }
 
   flush(options: FlushOptions): Promise<FlushResult> {
@@ -427,12 +437,34 @@ class DurableCloudUploader implements CloudUploader {
     return this.terminated ?? Promise.resolve();
   }
 
-  async enqueueArtifact(sealedArtifactPath: string): Promise<EnqueueReceipt> {
+  async enqueueArtifact(
+    sealedArtifactPath: string,
+    options?: EnqueueOptions,
+  ): Promise<EnqueueReceipt> {
     await this.ready;
     this.assertRunning();
-    const admitted = this.admission.then(() =>
-      this.enqueueArtifactOwned(sealedArtifactPath),
-    );
+    const admitted = this.admission.then(async () => {
+      const receipt = await this.enqueueArtifactOwned(sealedArtifactPath);
+      if (
+        options?.removeSourceAfterAdmissionFrom &&
+        receipt.state !== 'awaiting_spool_admission'
+      ) {
+        try {
+          await removeDirectArtifactChild(
+            sealedArtifactPath,
+            options.removeSourceAfterAdmissionFrom,
+          );
+        } catch (error) {
+          await this.recordFailure(
+            receipt.bundleDigest,
+            'SOURCE_CLEANUP_FAILED',
+            error instanceof Error ? error.message : String(error),
+          );
+          await this.refreshStatus();
+        }
+      }
+      return receipt;
+    });
     this.admission = admitted.then(
       () => undefined,
       () => undefined,
@@ -1280,6 +1312,15 @@ class DurableCloudUploader implements CloudUploader {
         continue;
       }
       try {
+        const bundle = join(item, 'bundle');
+        if (!(await exists(bundle))) continue;
+        const inventory = await inventoryBundle(bundle);
+        if (
+          receipt.bundle_id !== inventory.bundleId ||
+          receipt.bundle_digest !== inventory.bundleDigest
+        ) {
+          continue;
+        }
         await rm(join(item, 'bundle'), { recursive: true, force: true });
         await syncDirectory(item);
       } catch (error) {
@@ -2489,18 +2530,24 @@ async function describeAcknowledgedItems(root: string): Promise<{
   let count = 0;
   for (const name of await listDirectories(root)) {
     try {
+      const item = join(root, name);
       const receipt = JSON.parse(
-        await readFile(join(root, name, 'receipt.json'), 'utf8'),
+        await readFile(join(item, 'receipt.json'), 'utf8'),
       ) as unknown;
-      if (
+      let valid =
         isRecord(receipt) &&
         receipt.status === 'acknowledged' &&
         receipt.bundle_digest === name &&
         typeof receipt.bundle_id === 'string' &&
-        typeof receipt.acknowledged_at === 'string'
-      ) {
-        count += 1;
+        typeof receipt.acknowledged_at === 'string';
+      const bundle = join(item, 'bundle');
+      if (valid && isRecord(receipt) && (await exists(bundle))) {
+        const inventory = await inventoryBundle(bundle);
+        valid =
+          receipt.bundle_id === inventory.bundleId &&
+          receipt.bundle_digest === inventory.bundleDigest;
       }
+      if (valid) count += 1;
     } catch {
       // Invalid acknowledgement directories still consume spool bytes.
     }
@@ -2571,7 +2618,11 @@ function describeAcknowledgedItemsSync(root: string): {
         typeof receipt.bundle_id === 'string' &&
         typeof receipt.acknowledged_at === 'string'
       ) {
-        count += 1;
+        try {
+          lstatSync(join(root, name, 'bundle'));
+        } catch {
+          count += 1;
+        }
       }
     } catch {
       // Invalid acknowledgement directories still consume spool bytes.
@@ -2816,6 +2867,22 @@ async function syncDirectory(path: string): Promise<void> {
   } finally {
     await handle?.close();
   }
+}
+
+async function removeDirectArtifactChild(
+  artifactPath: string,
+  outputDirectory: string,
+): Promise<void> {
+  const metadata = await lstat(artifactPath);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new Error('sealed capture path is not a regular directory');
+  const [outputRoot, artifact] = await Promise.all([
+    realpath(resolve(outputDirectory)),
+    realpath(resolve(artifactPath)),
+  ]);
+  if (dirname(artifact) !== outputRoot)
+    throw new Error('sealed capture path is outside the capture output root');
+  await rm(artifact, { recursive: true, force: true });
 }
 
 async function exists(path: string): Promise<boolean> {
