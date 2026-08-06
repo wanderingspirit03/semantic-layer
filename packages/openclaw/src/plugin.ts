@@ -1,4 +1,6 @@
 import { createHmac } from 'node:crypto';
+import { lstat, realpath, rm } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import type {
   OpenClawPluginApi,
   OpenClawPluginDefinition,
@@ -54,7 +56,7 @@ export type PluginApi = {
 export type PluginDefinition = OpenClawPluginDefinition & {
   id: 'semantic-layer-openclaw';
   name: 'Semantic Layer';
-  version: '0.1.0-pilot.1';
+  version: '0.1.0-pilot.2';
   register(api: PluginApi): void;
 };
 
@@ -132,7 +134,7 @@ export function createPluginDefinition(
     name: 'Semantic Layer',
     description:
       'Capture OpenClaw runs as semantic traces and enqueue sealed bundles for upload.',
-    version: '0.1.0-pilot.1',
+    version: '0.1.0-pilot.2',
     register(api) {
       const runtime = new CaptureRuntime(api, dependencies, options);
       runtime.registerHooks();
@@ -176,7 +178,7 @@ class CaptureRuntime {
       this.logOnce(
         'invalid-config',
         'error',
-        'Semantic Layer capture is disabled: configuration is incomplete. Run npx -y semantic-layer-openclaw-setup@0.1.0-pilot.1 doctor.',
+        'Semantic Layer capture is disabled: configuration is incomplete. Run npx -y semantic-layer-openclaw-setup@0.1.0-pilot.4 doctor.',
       );
     } else if (
       hostVersion &&
@@ -1201,6 +1203,15 @@ class CaptureRuntime {
               'error',
               `Semantic Layer spool is full; the sealed capture for run ${run.runId} is awaiting local spool admission. The agent was unaffected.`,
             );
+          } else {
+            try {
+              await this.removeDurablyStagedArtifact(status.artifactPath);
+            } catch (error) {
+              this.logError(
+                `durably staged capture could not be removed for run ${run.runId}; upload will continue from the spool and the extra local copy was retained`,
+                error,
+              );
+            }
           }
         } catch (error) {
           this.logError(
@@ -1219,6 +1230,24 @@ class CaptureRuntime {
       owners?.delete(run.runId);
       if (owners?.size === 0) this.sessionOwners.delete(sessionKey);
     }
+  }
+
+  private async removeDurablyStagedArtifact(
+    artifactPath: string,
+  ): Promise<void> {
+    const outputDirectory = this.config?.outputDirectory;
+    if (!outputDirectory)
+      throw new Error('capture output directory is not configured');
+    const metadata = await lstat(artifactPath);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink())
+      throw new Error('sealed capture path is not a regular directory');
+    const [outputRoot, artifact] = await Promise.all([
+      realpath(resolve(outputDirectory)),
+      realpath(resolve(artifactPath)),
+    ]);
+    if (dirname(artifact) !== outputRoot)
+      throw new Error('sealed capture path is outside the capture output root');
+    await rm(artifactPath, { recursive: true, force: true });
   }
 
   private reasoningLimitGap(run: Run): void {

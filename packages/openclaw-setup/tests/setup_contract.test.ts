@@ -8,6 +8,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   commandTimeoutMs,
@@ -46,13 +47,13 @@ afterEach(async () => {
 describe('client setup command contract', () => {
   it('uses the exact native npm package spec and one explicit restart', () => {
     const commands = setupCommandPlan(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.1',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.2',
       '/safe/patch.json',
     );
     expect(commands[0]).toEqual([
       'plugins',
       'install',
-      'npm:semantic-layer-openclaw@0.1.0-pilot.1',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.2',
       '--pin',
     ]);
     expect(commands).toContainEqual([
@@ -60,6 +61,10 @@ describe('client setup command contract', () => {
       'patch',
       '--file',
       '/safe/patch.json',
+      '--replace-path',
+      'plugins.entries.semantic-layer-openclaw',
+      '--replace-path',
+      'secrets.providers.semantic_layer',
       '--dry-run',
     ]);
     expect(commands).toContainEqual([
@@ -67,6 +72,10 @@ describe('client setup command contract', () => {
       'patch',
       '--file',
       '/safe/patch.json',
+      '--replace-path',
+      'plugins.entries.semantic-layer-openclaw',
+      '--replace-path',
+      'secrets.providers.semantic_layer',
     ]);
     expect(commands).toContainEqual(['config', 'validate']);
     expect(commands).toContainEqual(['secrets', 'audit', '--check']);
@@ -84,12 +93,26 @@ describe('client setup command contract', () => {
     ]);
   });
 
+  it('never changes or restarts the Gateway in container mode', () => {
+    const commands = setupCommandPlan(
+      'npm:semantic-layer-openclaw@0.1.0-pilot.2',
+      '/safe/patch.json',
+      'container',
+    );
+    expect(commands).not.toContainEqual(['security', 'audit', '--json']);
+    expect(
+      commands.some(
+        (args) => args[0] === 'gateway' && args[1] === 'restart',
+      ),
+    ).toBe(false);
+  });
+
   it('allows native install and restart commands enough time on a fresh host', () => {
     expect(
       commandTimeoutMs([
         'plugins',
         'install',
-        'npm:semantic-layer-openclaw@0.1.0-pilot.1',
+        'npm:semantic-layer-openclaw@0.1.0-pilot.2',
       ]),
     ).toBe(300_000);
     expect(commandTimeoutMs(['gateway', 'restart'])).toBe(120_000);
@@ -103,6 +126,11 @@ describe('client setup command contract', () => {
       ['secrets', 'audit', '--check'],
       ['security', 'audit', '--json'],
       ['gateway', 'status', '--deep', '--require-rpc'],
+    ]);
+    expect(doctorCommandPlan(true)).toEqual([
+      ['config', 'validate'],
+      ['secrets', 'audit', '--check'],
+      ['gateway', 'health', '--json'],
     ]);
   });
 
@@ -152,6 +180,7 @@ describe('client setup command contract', () => {
       credentials: first,
     });
     expect(pluginConfig).toMatchObject({
+      maxSpoolBytes: 1024 * 1024 * 1024,
       installationId: first.installationId,
       ingestKey: {
         source: 'file',
@@ -287,11 +316,11 @@ describe('client setup command contract', () => {
 
   it('accepts only the exact public pilot or an absolute test tarball override', () => {
     expect(packageInstallSpec(undefined)).toBe(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.1',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.2',
     );
     expect(
-      packageInstallSpec('npm:semantic-layer-openclaw@0.1.0-pilot.1'),
-    ).toBe('npm:semantic-layer-openclaw@0.1.0-pilot.1');
+      packageInstallSpec('npm:semantic-layer-openclaw@0.1.0-pilot.2'),
+    ).toBe('npm:semantic-layer-openclaw@0.1.0-pilot.2');
     expect(packageInstallSpec('npm-pack:/tmp/plugin.tgz')).toBe(
       '/tmp/plugin.tgz',
     );
@@ -421,6 +450,24 @@ describe('client setup command contract', () => {
     expect(writes.join('')).not.toContain('ingest-secret');
   });
 
+  it('reads one hidden ingestion key from noninteractive stdin', async () => {
+    const input = Readable.from(['piped-ingest-secret\n']);
+    const output = new PassThrough();
+    let visible = '';
+    output.on('data', (chunk: Buffer) => {
+      visible += chunk.toString('utf8');
+    });
+
+    await expect(
+      hiddenQuestion(
+        'Ingestion key (hidden): ',
+        input as Parameters<typeof hiddenQuestion>[1],
+        output,
+      ),
+    ).resolves.toBe('piped-ingest-secret');
+    expect(visible).not.toContain('piped-ingest-secret');
+  });
+
   it('never passes setup secrets to an OpenClaw child process', async () => {
     const directory = await mkdtemp(
       join(tmpdir(), 'semantic-layer-openclaw-setup-'),
@@ -459,7 +506,77 @@ describe('client setup command contract', () => {
     }
   });
 
-  it('configures one fresh host with its assigned installation ID in one setup run', async () => {
+  it('rejects unknown options before entering setup', async () => {
+    await expect(main(['setup', '--containerish'])).resolves.toBe(2);
+    await expect(main(['doctor', '--containerish'])).resolves.toBe(2);
+  });
+
+  it('changes nothing when cloud authentication rejects the assigned key', async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-invalid-auth-'),
+    );
+    temporaryDirectories.push(directory);
+    const executable = join(directory, 'openclaw-fixture');
+    const configPath = join(directory, 'openclaw.json');
+    const initialConfig = JSON.stringify({
+      gateway: { bind: 'custom', port: 18789 },
+      plugins: { entries: { latitude: { enabled: true } } },
+    });
+    await writeFile(configPath, initialConfig);
+    await writeFile(
+      executable,
+      [
+        '#!/usr/bin/env node',
+        "if (process.argv[2] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
+        '',
+      ].join('\n'),
+    );
+    await chmod(executable, 0o700);
+    const previous = {
+      bin: process.env.OPENCLAW_BIN,
+      state: process.env.OPENCLAW_STATE_DIR,
+      config: process.env.OPENCLAW_CONFIG_PATH,
+      ingest: process.env.SEMANTIC_LAYER_INGEST_KEY,
+      identity: process.env.SEMANTIC_LAYER_IDENTITY_KEY,
+      fetch: globalThis.fetch,
+    };
+    process.env.OPENCLAW_BIN = executable;
+    process.env.OPENCLAW_STATE_DIR = directory;
+    process.env.OPENCLAW_CONFIG_PATH = configPath;
+    process.env.SEMANTIC_LAYER_INGEST_KEY = 'wrong-ingest-key';
+    process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'i'.repeat(64);
+    globalThis.fetch = async (input) =>
+      String(input).endsWith('/health')
+        ? new Response('{"status":"ok"}')
+        : new Response('{"error":"UNAUTHENTICATED"}', { status: 401 });
+    try {
+      await expect(
+        main([
+          'setup',
+          '--container',
+          '--endpoint',
+          'https://ingest.example.test',
+          '--service-name',
+          'customer-openclaw-vm-01',
+          '--installation-id',
+          'install_0123456789abcdef0123456789abcdef',
+        ]),
+      ).resolves.toBe(1);
+      expect(await readFile(configPath, 'utf8')).toBe(initialConfig);
+      await expect(lstat(join(directory, 'semantic-layer'))).rejects.toMatchObject(
+        { code: 'ENOENT' },
+      );
+    } finally {
+      restoreEnvironment('OPENCLAW_BIN', previous.bin);
+      restoreEnvironment('OPENCLAW_STATE_DIR', previous.state);
+      restoreEnvironment('OPENCLAW_CONFIG_PATH', previous.config);
+      restoreEnvironment('SEMANTIC_LAYER_INGEST_KEY', previous.ingest);
+      restoreEnvironment('SEMANTIC_LAYER_IDENTITY_KEY', previous.identity);
+      globalThis.fetch = previous.fetch;
+    }
+  });
+
+  it('configures, checks, reruns, and removes one foreground container without changing Gateway or Latitude', async () => {
     const directory = await mkdtemp(
       join(tmpdir(), 'semantic-layer-openclaw-setup-e2e-'),
     );
@@ -469,6 +586,8 @@ describe('client setup command contract', () => {
     const endpoint = 'https://ingest.example.test';
     const spoolDirectory = join(directory, 'semantic-layer', 'cloud-spool');
     const openClawConfigPath = join(directory, 'openclaw.json');
+    const pluginMarker = join(directory, 'plugin-installed');
+    const installCountPath = join(directory, 'plugin-install-count');
     const verifiedInstallationIds: string[] = [];
     const latitudeEntry = {
       enabled: true,
@@ -476,25 +595,35 @@ describe('client setup command contract', () => {
     };
     await writeFile(
       openClawConfigPath,
-      JSON.stringify({ plugins: { entries: { latitude: latitudeEntry } } }),
+      JSON.stringify({
+        gateway: {
+          mode: 'remote',
+          bind: 'custom',
+          customBindHost: '0.0.0.0',
+          port: 18789,
+        },
+        plugins: { entries: { latitude: latitudeEntry } },
+      }),
     );
     await writeFile(
       executable,
       [
         '#!/usr/bin/env node',
-        "import { readFileSync, writeFileSync } from 'node:fs';",
+        "import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';",
         "if (process.env.SEMANTIC_LAYER_INGEST_KEY || process.env.SEMANTIC_LAYER_IDENTITY_KEY) process.exit(23);",
         'const args = process.argv.slice(2);',
-        'const merge = (left, right) => { for (const [key, value] of Object.entries(right)) { left[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(left[key] && typeof left[key] === "object" && !Array.isArray(left[key]) ? left[key] : {}, value) : value; } return left; };',
+        'const merge = (left, right) => { for (const [key, value] of Object.entries(right)) { if (value === null) delete left[key]; else left[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(left[key] && typeof left[key] === "object" && !Array.isArray(left[key]) ? left[key] : {}, value) : value; } return left; };',
+        'const get = (root, path) => path.split(".").reduce((value, key) => value && typeof value === "object" ? value[key] : undefined, root);',
+        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.2' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.2', installPath: '/customer/.openclaw/npm/node_modules/semantic-layer-openclaw', source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.2' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
         "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
-        `else if (args[0] === 'plugins' && args[1] === 'inspect') process.stdout.write(${JSON.stringify(JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] }))});`,
+        "else if (args[0] === 'plugins' && args[1] === 'inspect') { if (!existsSync(process.env.PLUGIN_MARKER)) { process.stderr.write('Plugin not found: semantic-layer-openclaw\\n'); process.exitCode = 1; } else process.stdout.write(JSON.stringify(report)); }",
+        "else if (args[0] === 'plugins' && args[1] === 'install') { writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); }",
+        "else if (args[0] === 'plugins' && args[1] === 'uninstall' && !args.includes('--dry-run')) { if (existsSync(process.env.PLUGIN_MARKER)) unlinkSync(process.env.PLUGIN_MARKER); const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); if (current.plugins?.entries) delete current.plugins.entries['semantic-layer-openclaw']; writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(current)); }",
+        "else if (args[0] === 'config' && args[1] === 'validate' && process.env.FAIL_CONFIG_VALIDATE === '1') { process.stderr.write('injected config validation failure\\n'); process.exitCode = 1; }",
         "else if (args[0] === 'security' && args[1] === 'audit') process.stdout.write(JSON.stringify({ summary: { critical: 0 } }));",
         "else if (args[0] === 'config' && args[1] === 'patch' && !args.includes('--dry-run')) { const patchPath = args[args.indexOf('--file') + 1]; const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const patch = JSON.parse(readFileSync(patchPath, 'utf8')); writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(merge(current, patch))); }",
-        `else if (args[0] === 'config' && args[1] === 'get' && args[2] === 'gateway.bind') process.stdout.write('loopback\\n');`,
-        `else if (args[0] === 'config' && args[1] === 'get' && args[2].endsWith('.config.endpoint')) process.stdout.write(${JSON.stringify(JSON.stringify(endpoint))});`,
-        `else if (args[0] === 'config' && args[1] === 'get' && args[2].endsWith('.config.spoolDirectory')) process.stdout.write(${JSON.stringify(JSON.stringify(spoolDirectory))});`,
-        `else if (args[0] === 'config' && args[1] === 'get' && args[2].endsWith('.config.installationId')) process.stdout.write(${JSON.stringify(JSON.stringify(installationId))});`,
-        "else if (args[0] === 'config' && args[1] === 'get') process.stdout.write('true\\n');",
+        "else if (args[0] === 'config' && args[1] === 'file') process.stdout.write(process.env.OPENCLAW_CONFIG_PATH + '\\n');",
+        "else if (args[0] === 'config' && args[1] === 'get') { const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const value = get(current, args[2]); if (value === undefined) { process.stderr.write('Config path not found: ' + args[2] + '\\n'); process.exitCode = 1; } else process.stdout.write(args.includes('--json') ? JSON.stringify(value) : (typeof value === 'string' ? value : JSON.stringify(value))); }",
         '',
       ].join('\n'),
     );
@@ -506,6 +635,9 @@ describe('client setup command contract', () => {
       config: process.env.OPENCLAW_CONFIG_PATH,
       ingest: process.env.SEMANTIC_LAYER_INGEST_KEY,
       identity: process.env.SEMANTIC_LAYER_IDENTITY_KEY,
+      marker: process.env.PLUGIN_MARKER,
+      installCount: process.env.INSTALL_COUNT_PATH,
+      failValidate: process.env.FAIL_CONFIG_VALIDATE,
       fetch: globalThis.fetch,
     };
     process.env.OPENCLAW_BIN = executable;
@@ -513,6 +645,8 @@ describe('client setup command contract', () => {
     process.env.OPENCLAW_CONFIG_PATH = openClawConfigPath;
     process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
     process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'i'.repeat(64);
+    process.env.PLUGIN_MARKER = pluginMarker;
+    process.env.INSTALL_COUNT_PATH = installCountPath;
     globalThis.fetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith('/health')) return new Response('{"status":"ok"}');
@@ -528,9 +662,32 @@ describe('client setup command contract', () => {
       return new Response('{"error":"NOT_FOUND"}', { status: 404 });
     };
     try {
+      const originalConfig = await readFile(openClawConfigPath, 'utf8');
+      process.env.FAIL_CONFIG_VALIDATE = '1';
       await expect(
         main([
           'setup',
+          '--container',
+          '--endpoint',
+          endpoint,
+          '--service-name',
+          'customer-openclaw-vm-01',
+          '--installation-id',
+          installationId,
+        ]),
+      ).resolves.toBe(1);
+      expect(await readFile(openClawConfigPath, 'utf8')).toBe(originalConfig);
+      await expect(lstat(pluginMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        lstat(join(directory, 'semantic-layer', 'credentials.json')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      process.env.FAIL_CONFIG_VALIDATE = '0';
+      process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
+      process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'i'.repeat(64);
+      await expect(
+        main([
+          'setup',
+          '--container',
           '--endpoint',
           endpoint,
           '--service-name',
@@ -557,10 +714,74 @@ describe('client setup command contract', () => {
       const openClawConfig = JSON.parse(
         await readFile(openClawConfigPath, 'utf8'),
       ) as {
+        gateway: Record<string, unknown>;
         plugins: { entries: Record<string, unknown> };
       };
       expect(openClawConfig.plugins.entries.latitude).toEqual(latitudeEntry);
       expect(openClawConfig.plugins.entries).toHaveProperty(
+        'semantic-layer-openclaw',
+      );
+      expect(openClawConfig.gateway).toEqual({
+        mode: 'remote',
+        bind: 'custom',
+        customBindHost: '0.0.0.0',
+        port: 18789,
+      });
+      expect(await readFile(installCountPath, 'utf8')).toBe('2');
+      expect(
+        JSON.parse(
+          await readFile(
+            join(directory, 'semantic-layer', 'installation.json'),
+            'utf8',
+          ),
+        ),
+      ).toMatchObject({
+        endpoint,
+        installationId,
+        pluginPackage: 'semantic-layer-openclaw',
+        pluginVersion: '0.1.0-pilot.2',
+        serviceName: 'customer-openclaw-vm-01',
+        setupMode: 'container',
+      });
+      await expect(main(['doctor', '--container'])).resolves.toBe(0);
+      process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
+      await expect(
+        main([
+          'setup',
+          '--container',
+          '--endpoint',
+          endpoint,
+          '--service-name',
+          'customer-openclaw-vm-01',
+          '--installation-id',
+          installationId,
+        ]),
+      ).resolves.toBe(0);
+      expect(await readFile(installCountPath, 'utf8')).toBe('2');
+
+      const localTrace = join(
+        directory,
+        'semantic-layer',
+        'traces',
+        'keep.txt',
+      );
+      const localSpool = join(
+        directory,
+        'semantic-layer',
+        'cloud-spool',
+        'keep.txt',
+      );
+      await writeFile(localTrace, 'trace', { mode: 0o600 });
+      await writeFile(localSpool, 'spool', { mode: 0o600 });
+      await expect(main(['uninstall', '--container'])).resolves.toBe(0);
+      expect(await readFile(localTrace, 'utf8')).toBe('trace');
+      expect(await readFile(localSpool, 'utf8')).toBe('spool');
+      const removedConfig = JSON.parse(
+        await readFile(openClawConfigPath, 'utf8'),
+      ) as { gateway: unknown; plugins: { entries: Record<string, unknown> } };
+      expect(removedConfig.gateway).toEqual(openClawConfig.gateway);
+      expect(removedConfig.plugins.entries.latitude).toEqual(latitudeEntry);
+      expect(removedConfig.plugins.entries).not.toHaveProperty(
         'semantic-layer-openclaw',
       );
       await expect(
@@ -574,6 +795,9 @@ describe('client setup command contract', () => {
       restoreEnvironment('OPENCLAW_CONFIG_PATH', previous.config);
       restoreEnvironment('SEMANTIC_LAYER_INGEST_KEY', previous.ingest);
       restoreEnvironment('SEMANTIC_LAYER_IDENTITY_KEY', previous.identity);
+      restoreEnvironment('PLUGIN_MARKER', previous.marker);
+      restoreEnvironment('INSTALL_COUNT_PATH', previous.installCount);
+      restoreEnvironment('FAIL_CONFIG_VALIDATE', previous.failValidate);
       globalThis.fetch = previous.fetch;
     }
   });

@@ -122,18 +122,18 @@ try {
     {
       name: 'semantic-layer-cloud',
       directory: 'packages/cloud',
-      version: '0.1.0-pilot.1',
+      version: '0.1.0-pilot.2',
       bin: 'semantic-layer-cloud',
     },
     {
       name: 'semantic-layer-openclaw',
       directory: 'packages/openclaw',
-      version: '0.1.0-pilot.1',
+      version: '0.1.0-pilot.2',
     },
     {
       name: 'semantic-layer-openclaw-setup',
       directory: 'packages/openclaw-setup',
-      version: '0.1.0-pilot.2',
+      version: '0.1.0-pilot.4',
       bin: 'semantic-layer-openclaw-setup',
     },
   ];

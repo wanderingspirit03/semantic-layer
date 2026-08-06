@@ -83,7 +83,7 @@ importers:
         specifier: 0.2.0-beta.0
         version: link:../sdk
       semantic-layer-cloud:
-        specifier: 0.1.0-pilot.1
+        specifier: 0.1.0-pilot.2
         version: link:../cloud
     devDependencies:
       '@types/node':
@@ -105,7 +105,7 @@ importers:
   packages/openclaw-setup:
     dependencies:
       semantic-layer-cloud:
-        specifier: 0.1.0-pilot.1
+        specifier: 0.1.0-pilot.2
         version: link:../cloud
     devDependencies:
       '@types/node':

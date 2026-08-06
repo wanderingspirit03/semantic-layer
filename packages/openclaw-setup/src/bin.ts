@@ -6,8 +6,10 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
+  rmdir,
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -20,7 +22,10 @@ import { createCloudUploader } from 'semantic-layer-cloud';
 import { checkCompatibility, type CompatibilityResult } from './preflight.js';
 
 const PLUGIN_ID = 'semantic-layer-openclaw';
-const PACKAGE_SPEC = 'npm:semantic-layer-openclaw@0.1.0-pilot.1';
+const PLUGIN_PACKAGE = 'semantic-layer-openclaw';
+const PLUGIN_VERSION = '0.1.0-pilot.2';
+const PACKAGE_SPEC = `npm:${PLUGIN_PACKAGE}@${PLUGIN_VERSION}`;
+const DEFAULT_OPENCLAW_SPOOL_BYTES = 1024 * 1024 * 1024;
 const SECRET_ENVIRONMENT_KEYS = [
   'SEMANTIC_LAYER_INGEST_KEY',
   'SEMANTIC_LAYER_IDENTITY_KEY',
@@ -46,14 +51,24 @@ export const REQUIRED_PLUGIN_HOOKS = [
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const command = argv[0] ?? 'help';
+  const args = argv.slice(1);
+  try {
+    validateCommandArguments(command, args);
+  } catch (error) {
+    process.stderr.write(
+      `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 2;
+  }
   if (command === 'help' || command === '--help' || command === '-h') {
     stdout.write(helpText());
     return 0;
   }
-  if (command === 'doctor') return doctor();
+  if (command === 'doctor') return doctor({ container: args.includes('--container') });
   if (command === 'status') return cloudSpoolCommand(false);
   if (command === 'drain') return cloudSpoolCommand(true);
   if (command === 'rotate-key') return rotateIngestionKey();
+  if (command === 'uninstall') return uninstall(args);
   if (command === 'dry-run') return setup({ dryRun: true });
   if (command === 'setup')
     return setup({ dryRun: argv.includes('--dry-run'), args: argv.slice(1) });
@@ -61,10 +76,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   return 2;
 }
 
-async function doctor(): Promise<number> {
+async function doctor(options: { container: boolean }): Promise<number> {
   const failures: string[] = [];
   let credentials: SetupCredentials | undefined;
+  let installationState: InstallationState | undefined;
   let endpoint: string | undefined;
+  let spoolDirectory: string | undefined;
   let qualification: CompatibilityResult['qualification'] = 'unknown';
   const host = runOpenClaw(['--version']);
   if (!host.ok)
@@ -117,8 +134,42 @@ async function doctor(): Promise<number> {
   } catch {
     failures.push(`${credentialPath} is unavailable; run setup.`);
   }
+  try {
+    installationState = await readInstallationState();
+  } catch {
+    failures.push(`${installationStatePath()} is unavailable; run setup.`);
+  }
+  if (
+    credentials &&
+    installationState &&
+    credentials.installationId !== installationState.installationId
+  ) {
+    failures.push(
+      'Installation ID differs between credentials and owner-only setup state.',
+    );
+  }
+  if (installationState && options.container && installationState.setupMode !== 'container')
+    failures.push(
+      `${installationStatePath()} does not describe a container installation; rerun setup --container.`,
+    );
+  if (installationState && !options.container && installationState.setupMode === 'container')
+    failures.push('This installation requires doctor --container.');
 
   if (host.ok) {
+    try {
+      const installed = inspectInstalledPlugin();
+      if (!installed)
+        failures.push('Semantic Layer plugin package is not installed.');
+      else if (
+        installed.packageName !== PLUGIN_PACKAGE ||
+        installed.version !== PLUGIN_VERSION
+      )
+        failures.push(
+          `Installed plugin must be ${PLUGIN_PACKAGE}@${PLUGIN_VERSION}.`,
+        );
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
     const inspect = runOpenClaw([
       'plugins',
       'inspect',
@@ -131,7 +182,7 @@ async function doctor(): Promise<number> {
         `Plugin runtime inspection failed: ${inspect.stderr || inspect.stdout}`,
       );
     else failures.push(...pluginRuntimeFailures(inspect.stdout));
-    for (const args of doctorCommandPlan()) {
+    for (const args of doctorCommandPlan(options.container)) {
       const result = runOpenClaw(args);
       if (!result.ok)
         failures.push(
@@ -140,9 +191,11 @@ async function doctor(): Promise<number> {
       else if (args[0] === 'security' && args[1] === 'audit')
         failures.push(...securityAuditFailures(result.stdout));
     }
-    const bind = runOpenClaw(['config', 'get', 'gateway.bind']);
-    if (!bind.ok || !/loopback/u.test(bind.stdout))
-      failures.push('Gateway bind must be loopback.');
+    if (!options.container) {
+      const bind = runOpenClaw(['config', 'get', 'gateway.bind']);
+      if (!bind.ok || !/loopback/u.test(bind.stdout))
+        failures.push('Gateway bind must be loopback.');
+    }
     const endpointResult = runOpenClaw([
       'config',
       'get',
@@ -155,6 +208,10 @@ async function doctor(): Promise<number> {
     } else {
       try {
         endpoint = configuredString(endpointResult.stdout);
+        if (installationState && endpoint !== installationState.endpoint)
+          failures.push(
+            'Plugin endpoint does not match owner-only setup state.',
+          );
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
       }
@@ -170,7 +227,7 @@ async function doctor(): Promise<number> {
       );
     else {
       try {
-        configuredString(spoolResult.stdout);
+        spoolDirectory = configuredString(spoolResult.stdout);
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
       }
@@ -191,6 +248,50 @@ async function doctor(): Promise<number> {
           credentials.installationId,
         ),
       );
+      if (
+        installationState &&
+        credentials.installationId !== installationState.installationId
+      )
+        failures.push(
+          'Plugin installation ID does not match owner-only installation state.',
+        );
+    }
+    const serviceNameResult = runOpenClaw([
+      'config',
+      'get',
+      `plugins.entries.${PLUGIN_ID}.config.serviceName`,
+    ]);
+    if (!serviceNameResult.ok) {
+      failures.push(
+        `Plugin service name lookup failed: ${serviceNameResult.stderr || serviceNameResult.stdout}`,
+      );
+    } else if (installationState) {
+      try {
+        if (
+          configuredString(serviceNameResult.stdout) !==
+          installationState.serviceName
+        )
+          failures.push(
+            'Plugin service name does not match owner-only setup state.',
+          );
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const spoolLimitResult = runOpenClaw([
+      'config',
+      'get',
+      `plugins.entries.${PLUGIN_ID}.config.maxSpoolBytes`,
+      '--json',
+    ]);
+    if (
+      !spoolLimitResult.ok ||
+      Number.parseInt(spoolLimitResult.stdout.trim(), 10) !==
+        DEFAULT_OPENCLAW_SPOOL_BYTES
+    ) {
+      failures.push(
+        `Plugin spool limit must be ${DEFAULT_OPENCLAW_SPOOL_BYTES} bytes.`,
+      );
     }
     const requiredBooleanSettings: ReadonlyArray<readonly [string, string]> = [
       [`plugins.entries.${PLUGIN_ID}.enabled`, 'plugin enabled'],
@@ -208,6 +309,19 @@ async function doctor(): Promise<number> {
       const health = await cloudHealth(endpoint);
       if (!health.ok)
         failures.push(`Cloud ingest health failed: ${health.error}`);
+    }
+  }
+  if (options.container && spoolDirectory) {
+    const spool = await inspectSpoolDirectory(spoolDirectory);
+    if (!spool.ok) failures.push(`Upload spool check failed: ${spool.error}`);
+    else {
+      stdout.write(
+        `Upload spool: ${spool.bytes} of ${DEFAULT_OPENCLAW_SPOOL_BYTES} bytes.\n`,
+      );
+      if (spool.bytes >= DEFAULT_OPENCLAW_SPOOL_BYTES)
+        failures.push('Upload spool is full.');
+      else if (spool.bytes >= DEFAULT_OPENCLAW_SPOOL_BYTES * 0.7)
+        stdout.write('WARN Upload spool is at least 70 percent full.\n');
     }
   }
   if (endpoint && credentials) {
@@ -230,7 +344,7 @@ async function doctor(): Promise<number> {
       ? 'exact_qualified'
       : 'capability_checked_unqualified';
   stdout.write(
-    `OK OpenClaw ${hostVersion}; Node ${process.versions.node}; ${doctorQualificationDescription(completedQualification)} host; plugin runtime and owner-only credentials verified.\n`,
+    `OK OpenClaw ${hostVersion}; Node ${process.versions.node}; ${doctorQualificationDescription(completedQualification)} host; plugin runtime and owner-only credentials verified${options.container ? '; container Gateway healthy' : ''}.\n`,
   );
   return 0;
 }
@@ -249,6 +363,9 @@ async function setup(options: {
   dryRun: boolean;
   args?: string[];
 }): Promise<number> {
+  const mode: SetupMode = options.args?.includes('--container')
+    ? 'container'
+    : 'service';
   const host = runOpenClaw(['--version']);
   if (!host.ok) {
     process.stderr.write(
@@ -293,7 +410,9 @@ async function setup(options: {
       [
         `Would install ${packageSpec} with the native OpenClaw plugin installer.`,
         'Would create an owner-only JSON credential file and configure file SecretRefs.',
-        'Would enable rich conversation hooks, restart the Gateway exactly once, then run doctor.',
+        mode === 'container'
+          ? 'Would enable rich conversation hooks without changing or restarting the Gateway.'
+          : 'Would enable rich conversation hooks, restart the Gateway exactly once, then run doctor.',
         'No files or OpenClaw state were changed.',
         '',
       ].join('\n'),
@@ -301,16 +420,21 @@ async function setup(options: {
     return 0;
   }
 
-  const prompt = createInterface({ input: stdin, output: stdout });
+  let prompt: ReturnType<typeof createInterface> | undefined;
+  const ask = async (label: string): Promise<string> => {
+    prompt ??= createInterface({ input: stdin, output: stdout });
+    return (await prompt.question(label)).trim();
+  };
   try {
     const endpoint =
       optionValue(options.args, '--endpoint') ??
-      (await prompt.question('HTTPS ingest endpoint: ')).trim();
+      (await ask('HTTPS ingest endpoint: '));
     const serviceName =
       optionValue(options.args, '--service-name') ??
-      (await prompt.question('Service name: ')).trim();
+      (await ask('Service name: '));
     const credentialPath = credentialsPath();
     let existingCredentials: SetupCredentials | undefined;
+    let existingInstallationState: InstallationState | undefined;
     try {
       await lstat(credentialPath);
       existingCredentials = await readSetupCredentials(false);
@@ -322,6 +446,17 @@ async function setup(options: {
         return 1;
       }
     }
+    try {
+      await lstat(installationStatePath());
+      existingInstallationState = await readInstallationState();
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        process.stderr.write(
+          `Existing installation state is unsafe or unreadable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return 1;
+      }
+    }
     if (!existingCredentials && !requestedInstallationId) {
       process.stderr.write(
         'FAIL First setup requires --installation-id with the ID assigned to this host.\n',
@@ -329,7 +464,8 @@ async function setup(options: {
       return 2;
     }
     const configuredSecrets = consumeSetupSecretEnvironment();
-    if (!configuredSecrets.ingestKey) prompt.close();
+    prompt?.close();
+    prompt = undefined;
     const ingestKey =
       configuredSecrets.ingestKey ??
       (await hiddenQuestion('Ingestion key (hidden): '));
@@ -384,15 +520,6 @@ async function setup(options: {
       return 1;
     }
 
-    const installCommand = pluginInstallCommand(packageSpec);
-    const installResult = runOpenClaw(installCommand);
-    if (!installResult.ok) {
-      process.stderr.write(
-        `OpenClaw command failed (${installCommand.join(' ')}): ${installResult.stderr || installResult.stdout}\n`,
-      );
-      return 1;
-    }
-
     const stateDirectory = dirname(dirname(credentialPath));
     const outputDirectory = join(stateDirectory, 'semantic-layer', 'traces');
     const spoolDirectory = join(
@@ -400,61 +527,140 @@ async function setup(options: {
       'semantic-layer',
       'cloud-spool',
     );
-    await mkdir(dirname(credentialPath), { recursive: true, mode: 0o700 });
-    await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
-    await mkdir(spoolDirectory, { recursive: true, mode: 0o700 });
-    await chmod(dirname(credentialPath), 0o700);
-    await chmod(outputDirectory, 0o700);
-    await chmod(spoolDirectory, 0o700);
-    await writeCredentialsAtomically(credentials);
-
+    const requestedState = createInstallationState({
+      endpoint,
+      installationId: credentials.installationId,
+      serviceName,
+      mode,
+    });
     const patchPath = join(
       dirname(credentialPath),
       'openclaw-config-patch.json',
     );
-    const patch = createOpenClawConfigPatch({
-      endpoint,
-      serviceName,
-      credentialPath,
-      outputDirectory,
-      spoolDirectory,
-      credentials,
+    let snapshot: ManagedSetupSnapshot;
+    try {
+      snapshot = managedSetupSnapshot();
+    } catch (error) {
+      process.stderr.write(
+        `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return 1;
+    }
+    const ownershipFailures = managedOwnershipFailures({
+      credentials: existingCredentials,
+      installationState: existingInstallationState,
+      requestedState,
+      snapshot,
     });
-    await writeFile(patchPath, `${JSON.stringify(patch, null, 2)}\n`, {
-      mode: 0o600,
-      flag: 'w',
-    });
-    await chmod(patchPath, 0o600);
+    if (ownershipFailures.length > 0) {
+      for (const failure of ownershipFailures)
+        process.stderr.write(`FAIL ${failure}\n`);
+      return 1;
+    }
 
-    for (const args of setupCommandPlan(packageSpec, patchPath).slice(1)) {
-      const result = runOpenClaw(args);
-      if (!result.ok) {
-        process.stderr.write(
-          `OpenClaw command failed (${args.join(' ')}): ${result.stderr || result.stdout}\n`,
-        );
-        return 1;
-      }
-      if (args[0] === 'security' && args[1] === 'audit') {
-        const securityFailures = securityAuditFailures(result.stdout);
-        if (securityFailures.length > 0) {
-          for (const failure of securityFailures)
-            process.stderr.write(`FAIL ${failure}\n`);
-          return 1;
+    const credentialBackup = existingCredentials
+      ? await readFile(credentialPath)
+      : undefined;
+    const stateBackup = existingInstallationState
+      ? await readFile(installationStatePath())
+      : undefined;
+    const createdDirectories: string[] = [];
+    let installedThisRun = false;
+    try {
+      if (!snapshot.plugin) {
+        const installCommand = pluginInstallCommand(packageSpec);
+        const installResult = runOpenClaw(installCommand);
+        if (!installResult.ok)
+          throw new Error(
+            `OpenClaw command failed (${installCommand.join(' ')}): ${installResult.stderr || installResult.stdout}`,
+          );
+        installedThisRun = true;
+        const installed = inspectInstalledPlugin();
+        if (
+          !installed ||
+          installed.packageName !== PLUGIN_PACKAGE ||
+          installed.version !== PLUGIN_VERSION
+        ) {
+          throw new Error(
+            `Installed plugin is not ${PLUGIN_PACKAGE}@${PLUGIN_VERSION}.`,
+          );
         }
       }
-      if (
-        args[0] === 'config' &&
-        args[1] === 'patch' &&
-        !args.includes('--dry-run')
-      ) {
-        await rm(patchPath, { force: true });
+
+      for (const directory of [
+        dirname(credentialPath),
+        outputDirectory,
+        spoolDirectory,
+      ]) {
+        if (!(await pathExists(directory))) createdDirectories.push(directory);
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await chmod(directory, 0o700);
       }
+      await writeCredentialsAtomically(credentials);
+      await writeInstallationStateAtomically(requestedState);
+
+      const patch = createOpenClawConfigPatch({
+        endpoint,
+        serviceName,
+        credentialPath,
+        outputDirectory,
+        spoolDirectory,
+        credentials,
+        mode,
+      });
+      await writeOwnerFileAtomically(
+        patchPath,
+        `${JSON.stringify(patch, null, 2)}\n`,
+      );
+
+      for (const args of setupCommandPlan(packageSpec, patchPath, mode).slice(1)) {
+        const result = runOpenClaw(args);
+        if (!result.ok)
+          throw new Error(
+            `OpenClaw command failed (${args.join(' ')}): ${result.stderr || result.stdout}`,
+          );
+        if (args[0] === 'security' && args[1] === 'audit') {
+          const securityFailures = securityAuditFailures(result.stdout);
+          if (securityFailures.length > 0)
+            throw new Error(securityFailures.join(' '));
+        }
+      }
+      const preservedFailures = preservedConfigurationFailures(snapshot);
+      if (preservedFailures.length > 0)
+        throw new Error(preservedFailures.join(' '));
+      stdout.write(`Plugin: ${inspectInstalledPlugin()?.installPath ?? 'installed'}\n`);
+      stdout.write(`Credentials: ${credentialPath}\n`);
+      stdout.write(`Local traces: ${outputDirectory}\n`);
+      stdout.write(`Durable upload spool: ${spoolDirectory}\n`);
+      stdout.write(
+        `Upload spool limit: ${DEFAULT_OPENCLAW_SPOOL_BYTES} bytes\n`,
+      );
+    } catch (error) {
+      const rollbackFailures = await rollbackManagedSetup({
+        credentialBackup,
+        createdDirectories,
+        installedThisRun,
+        patchPath,
+        snapshot,
+        stateBackup,
+      });
+      process.stderr.write(
+        `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      for (const failure of rollbackFailures)
+        process.stderr.write(`FAIL Rollback: ${failure}\n`);
+      return 1;
+    } finally {
+      await rm(patchPath, { force: true });
     }
-    stdout.write(`Durable upload spool: ${spoolDirectory}\n`);
   } finally {
-    prompt.close();
+    prompt?.close();
   }
-  return doctor();
+  if (mode === 'container') {
+    stdout.write('OK. Restart the container, then run doctor --container.\n');
+    return 0;
+  }
+  return doctor({ container: false });
 }
 
 function createOpenClawConfigPatch(input: {
@@ -464,6 +670,7 @@ function createOpenClawConfigPatch(input: {
   outputDirectory: string;
   spoolDirectory: string;
   credentials: SetupCredentials;
+  mode: SetupMode;
 }): Record<string, unknown> {
   return {
     secrets: {
@@ -475,7 +682,9 @@ function createOpenClawConfigPatch(input: {
         },
       },
     },
-    gateway: { mode: 'local', bind: 'loopback' },
+    ...(input.mode === 'service'
+      ? { gateway: { mode: 'local', bind: 'loopback' } }
+      : {}),
     plugins: {
       entries: {
         [PLUGIN_ID]: {
@@ -494,6 +703,133 @@ function createOpenClawConfigPatch(input: {
   };
 }
 
+async function uninstall(args: string[]): Promise<number> {
+  if (!args.includes('--container')) return 2;
+  const host = runOpenClaw(['--version']);
+  if (!host.ok) {
+    process.stderr.write(
+      `FAIL OpenClaw CLI unavailable: ${host.stderr || host.stdout}\n`,
+    );
+    return 1;
+  }
+  let credentials: SetupCredentials;
+  let installationState: InstallationState;
+  let snapshot: ManagedSetupSnapshot;
+  try {
+    credentials = await readSetupCredentials();
+    installationState = await readInstallationState();
+    snapshot = managedSetupSnapshot();
+  } catch (error) {
+    process.stderr.write(
+      `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
+  }
+  if (
+    installationState.setupMode !== 'container' ||
+    installationState.installationId !== credentials.installationId
+  ) {
+    process.stderr.write(
+      'FAIL Owner-only setup state does not describe this container installation.\n',
+    );
+    return 1;
+  }
+  if (
+    snapshot.plugin &&
+    (snapshot.plugin.packageName !== PLUGIN_PACKAGE ||
+      snapshot.plugin.version !== PLUGIN_VERSION)
+  ) {
+    process.stderr.write(
+      'FAIL Installed plugin does not match the managed package and version.\n',
+    );
+    return 1;
+  }
+  const cleanupPath = join(
+    dirname(credentialsPath()),
+    'openclaw-container-uninstall-patch.json',
+  );
+  const cleanupPatch = {
+    secrets: { providers: { semantic_layer: null } },
+    plugins: { entries: { [PLUGIN_ID]: null } },
+  };
+  try {
+    await writeOwnerFileAtomically(
+      cleanupPath,
+      `${JSON.stringify(cleanupPatch, null, 2)}\n`,
+    );
+    const patchArgs = [
+      'config',
+      'patch',
+      '--file',
+      cleanupPath,
+      '--replace-path',
+      `plugins.entries.${PLUGIN_ID}`,
+      '--replace-path',
+      'secrets.providers.semantic_layer',
+    ];
+    const dryRun = runOpenClaw([...patchArgs, '--dry-run']);
+    if (!dryRun.ok)
+      throw new Error(
+        `OpenClaw config cleanup dry-run failed: ${dryRun.stderr || dryRun.stdout}`,
+      );
+    if (snapshot.plugin) {
+      const uninstallDryRun = runOpenClaw([
+        'plugins',
+        'uninstall',
+        PLUGIN_ID,
+        '--dry-run',
+      ]);
+      if (!uninstallDryRun.ok)
+        throw new Error(
+          `OpenClaw plugin uninstall dry-run failed: ${uninstallDryRun.stderr || uninstallDryRun.stdout}`,
+        );
+      const uninstallResult = runOpenClaw([
+        'plugins',
+        'uninstall',
+        PLUGIN_ID,
+        '--force',
+      ]);
+      if (!uninstallResult.ok)
+        throw new Error(
+          `OpenClaw plugin uninstall failed: ${uninstallResult.stderr || uninstallResult.stdout}`,
+        );
+    }
+    const patchResult = runOpenClaw(patchArgs);
+    if (!patchResult.ok)
+      throw new Error(
+        `OpenClaw config cleanup failed: ${patchResult.stderr || patchResult.stdout}`,
+      );
+    const validate = runOpenClaw(['config', 'validate']);
+    if (!validate.ok)
+      throw new Error(
+        `OpenClaw config validation failed: ${validate.stderr || validate.stdout}`,
+      );
+    const preservedFailures = preservedConfigurationFailures(snapshot);
+    if (preservedFailures.length > 0)
+      throw new Error(preservedFailures.join(' '));
+    await rm(credentialsPath(), { force: true });
+    await rm(installationStatePath(), { force: true });
+  } catch (error) {
+    process.stderr.write(
+      `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
+  } finally {
+    await rm(cleanupPath, { force: true });
+  }
+  const stateDirectory = managedStateDirectory();
+  stdout.write('OK Semantic Layer was removed from OpenClaw.\n');
+  stdout.write(`Revoke installation: ${credentials.installationId}\n`);
+  stdout.write(
+    `Preserved local traces: ${join(stateDirectory, 'semantic-layer', 'traces')}\n`,
+  );
+  stdout.write(
+    `Preserved upload spool: ${join(stateDirectory, 'semantic-layer', 'cloud-spool')}\n`,
+  );
+  stdout.write('The container was not restarted.\n');
+  return 0;
+}
+
 async function rotateIngestionKey(): Promise<number> {
   const previous = await readSetupCredentials().catch((error: unknown) => {
     process.stderr.write(
@@ -502,6 +838,15 @@ async function rotateIngestionKey(): Promise<number> {
     return undefined;
   });
   if (!previous) return 1;
+  const installationState = await readInstallationState().catch(
+    (error: unknown) => {
+      process.stderr.write(
+        `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return undefined;
+    },
+  );
+  if (!installationState) return 1;
   const endpoint = (() => {
     try {
       return requiredConfiguredString(
@@ -546,7 +891,9 @@ async function rotateIngestionKey(): Promise<number> {
     );
     return 1;
   }
-  const result = await doctor();
+  const result = await doctor({
+    container: installationState.setupMode === 'container',
+  });
   if (result !== 0) {
     await writeCredentialsAtomically(previous);
     runOpenClaw(['secrets', 'reload', '--json']);
@@ -655,10 +1002,388 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+type ConfigValueSnapshot =
+  | { exists: false }
+  | { exists: true; value: unknown };
+
+type InstalledPlugin = {
+  installPath?: string;
+  packageName: string;
+  source?: string;
+  spec?: string;
+  version: string;
+};
+
+type ManagedSetupSnapshot = {
+  gateway: ConfigValueSnapshot;
+  plugin: InstalledPlugin | undefined;
+  pluginEntry: ConfigValueSnapshot;
+  pluginEntries: ConfigValueSnapshot;
+  secrets: ConfigValueSnapshot;
+  secretProvider: ConfigValueSnapshot;
+};
+
+function configValueSnapshot(path: string): ConfigValueSnapshot {
+  const result = runOpenClaw(['config', 'get', path, '--json']);
+  if (!result.ok) {
+    if (/Config path not found:/u.test(`${result.stderr}\n${result.stdout}`))
+      return { exists: false };
+    throw new Error(
+      `OpenClaw config get ${path} failed: ${result.stderr || result.stdout}`,
+    );
+  }
+  try {
+    return { exists: true, value: JSON.parse(result.stdout) as unknown };
+  } catch {
+    throw new Error(`OpenClaw config get ${path} did not return valid JSON.`);
+  }
+}
+
+function inspectInstalledPlugin(): InstalledPlugin | undefined {
+  const result = runOpenClaw(['plugins', 'inspect', PLUGIN_ID, '--json']);
+  if (!result.ok) {
+    if (/Plugin not found:/u.test(`${result.stderr}\n${result.stdout}`))
+      return undefined;
+    throw new Error(
+      `OpenClaw plugin inspection failed: ${result.stderr || result.stdout}`,
+    );
+  }
+  let report: unknown;
+  try {
+    report = JSON.parse(result.stdout) as unknown;
+  } catch {
+    throw new Error('OpenClaw plugin inspection did not return valid JSON.');
+  }
+  if (!isRecord(report))
+    throw new Error('OpenClaw plugin inspection JSON must be an object.');
+  const plugin = isRecord(report.plugin) ? report.plugin : undefined;
+  const install = isRecord(report.install) ? report.install : undefined;
+  const packageName =
+    typeof install?.resolvedName === 'string'
+      ? install.resolvedName
+      : typeof plugin?.packageName === 'string'
+        ? plugin.packageName
+        : undefined;
+  const version =
+    typeof install?.resolvedVersion === 'string'
+      ? install.resolvedVersion
+      : typeof install?.version === 'string'
+        ? install.version
+        : typeof plugin?.version === 'string'
+          ? plugin.version
+          : undefined;
+  if (!packageName || !version)
+    throw new Error(
+      'OpenClaw plugin inspection is missing managed package identity.',
+    );
+  return {
+    packageName,
+    version,
+    ...(typeof install?.installPath === 'string'
+      ? { installPath: install.installPath }
+      : {}),
+    ...(typeof install?.source === 'string' ? { source: install.source } : {}),
+    ...(typeof install?.spec === 'string' ? { spec: install.spec } : {}),
+  };
+}
+
+function managedSetupSnapshot(): ManagedSetupSnapshot {
+  return {
+    gateway: configValueSnapshot('gateway'),
+    plugin: inspectInstalledPlugin(),
+    pluginEntry: configValueSnapshot(`plugins.entries.${PLUGIN_ID}`),
+    pluginEntries: configValueSnapshot('plugins.entries'),
+    secrets: configValueSnapshot('secrets'),
+    secretProvider: configValueSnapshot('secrets.providers.semantic_layer'),
+  };
+}
+
+function preservedConfigurationFailures(
+  before: ManagedSetupSnapshot,
+): string[] {
+  const failures: string[] = [];
+  const gateway = configValueSnapshot('gateway');
+  if (!sameConfigValue(before.gateway, gateway))
+    failures.push('Setup changed Gateway configuration.');
+  const entries = configValueSnapshot('plugins.entries');
+  if (
+    canonicalJson(withoutManagedPlugin(before.pluginEntries)) !==
+    canonicalJson(withoutManagedPlugin(entries))
+  ) {
+    failures.push('Setup changed another plugin configuration entry.');
+  }
+  return failures;
+}
+
+function sameConfigValue(
+  left: ConfigValueSnapshot,
+  right: ConfigValueSnapshot,
+): boolean {
+  if (left.exists !== right.exists) return false;
+  if (!left.exists || !right.exists) return true;
+  return canonicalJson(left.value) === canonicalJson(right.value);
+}
+
+function withoutManagedPlugin(snapshot: ConfigValueSnapshot): unknown {
+  if (!snapshot.exists || !isRecord(snapshot.value)) return {};
+  const entries = { ...snapshot.value };
+  delete entries[PLUGIN_ID];
+  return entries;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value))
+    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  if (isRecord(value))
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`;
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+function createInstallationState(input: {
+  endpoint: string;
+  installationId: string;
+  mode: SetupMode;
+  serviceName: string;
+}): InstallationState {
+  return {
+    schema: 'semantic_layer_openclaw_installation_v1',
+    endpoint: input.endpoint,
+    installationId: input.installationId,
+    maxSpoolBytes: DEFAULT_OPENCLAW_SPOOL_BYTES,
+    pluginPackage: PLUGIN_PACKAGE,
+    pluginVersion: PLUGIN_VERSION,
+    serviceName: input.serviceName,
+    setupMode: input.mode,
+  };
+}
+
+function managedOwnershipFailures(input: {
+  credentials: SetupCredentials | undefined;
+  installationState: InstallationState | undefined;
+  requestedState: InstallationState;
+  snapshot: ManagedSetupSnapshot;
+}): string[] {
+  const failures: string[] = [];
+  const owned = input.installationState !== undefined;
+  if (Boolean(input.credentials) !== owned)
+    failures.push(
+      'Credentials and installation state must either both exist or both be absent.',
+    );
+  if (owned) {
+    if (
+      canonicalJson(input.installationState) !==
+      canonicalJson(input.requestedState)
+    ) {
+      failures.push(
+        'Requested endpoint, service name, installation ID, mode, or pinned package differs from existing installation state.',
+      );
+    }
+    if (
+      input.credentials?.installationId !==
+      input.installationState?.installationId
+    ) {
+      failures.push(
+        'Existing credentials do not match existing installation state.',
+      );
+    }
+  } else {
+    if (input.snapshot.plugin)
+      failures.push(
+        'The Semantic Layer plugin already exists without managed installation state.',
+      );
+    if (input.snapshot.pluginEntry.exists)
+      failures.push(
+        'The Semantic Layer plugin config entry already exists without managed installation state.',
+      );
+    if (input.snapshot.secretProvider.exists)
+      failures.push(
+        'The semantic_layer secret provider already exists without managed installation state.',
+      );
+  }
+  if (
+    input.snapshot.plugin &&
+    (input.snapshot.plugin.packageName !== PLUGIN_PACKAGE ||
+      input.snapshot.plugin.version !== PLUGIN_VERSION)
+  ) {
+    failures.push(
+      `Installed plugin must be ${PLUGIN_PACKAGE}@${PLUGIN_VERSION}; upgrades require a separate controlled release.`,
+    );
+  }
+  return failures;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function inspectSpoolDirectory(
+  root: string,
+): Promise<{ ok: true; bytes: number } | { ok: false; error: string }> {
+  try {
+    const rootMetadata = await lstat(root);
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink())
+      throw new Error('spool root must be a regular directory, not a link');
+    if ((rootMetadata.mode & 0o077) !== 0)
+      throw new Error('spool root must be owner-only');
+    let bytes = 0;
+    const pending = [root];
+    while (pending.length > 0) {
+      const directory = pending.pop();
+      if (!directory) continue;
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isSymbolicLink())
+          throw new Error(`spool contains a symbolic link: ${path}`);
+        if (entry.isDirectory()) {
+          pending.push(path);
+          continue;
+        }
+        if (!entry.isFile())
+          throw new Error(`spool contains an unsupported entry: ${path}`);
+        const metadata = await lstat(path);
+        if ((metadata.mode & 0o077) !== 0)
+          throw new Error(`spool file must be owner-only: ${path}`);
+        bytes += metadata.size;
+      }
+    }
+    return { ok: true, bytes };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function rollbackManagedSetup(input: {
+  credentialBackup: Buffer | undefined;
+  createdDirectories: string[];
+  installedThisRun: boolean;
+  patchPath: string;
+  snapshot: ManagedSetupSnapshot;
+  stateBackup: Buffer | undefined;
+}): Promise<string[]> {
+  const failures: string[] = [];
+  if (input.installedThisRun) {
+    const uninstallResult = runOpenClaw([
+      'plugins',
+      'uninstall',
+      PLUGIN_ID,
+      '--force',
+    ]);
+    if (!uninstallResult.ok)
+      failures.push(
+        `Plugin uninstall failed: ${uninstallResult.stderr || uninstallResult.stdout}`,
+      );
+  }
+  try {
+    const rollbackPath = join(
+      managedStateDirectory(),
+      `.semantic-layer-rollback-${process.pid}-${Date.now()}.json`,
+    );
+    const patch = {
+      secrets: input.snapshot.secrets.exists
+        ? input.snapshot.secrets.value
+        : null,
+      plugins: {
+        entries: {
+          [PLUGIN_ID]: input.snapshot.pluginEntry.exists
+            ? input.snapshot.pluginEntry.value
+            : null,
+        },
+      },
+    };
+    await writeOwnerFileAtomically(
+      rollbackPath,
+      `${JSON.stringify(patch, null, 2)}\n`,
+    );
+    const result = runOpenClaw([
+      'config',
+      'patch',
+      '--file',
+      rollbackPath,
+      '--replace-path',
+      `plugins.entries.${PLUGIN_ID}`,
+      '--replace-path',
+      'secrets',
+    ]);
+    await rm(rollbackPath, { force: true });
+    if (!result.ok)
+      failures.push(
+        `Config restore failed: ${result.stderr || result.stdout}`,
+      );
+  } catch (error) {
+    failures.push(
+      `Config restore failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    if (input.credentialBackup)
+      await writeOwnerFileAtomically(credentialsPath(), input.credentialBackup);
+    else await rm(credentialsPath(), { force: true });
+  } catch (error) {
+    failures.push(
+      `Credential restore failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    if (input.stateBackup)
+      await writeOwnerFileAtomically(
+        installationStatePath(),
+        input.stateBackup,
+      );
+    else await rm(installationStatePath(), { force: true });
+  } catch (error) {
+    failures.push(
+      `Installation state restore failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const directory of [...input.createdDirectories].reverse()) {
+    try {
+      await rmdir(directory);
+    } catch (error) {
+      if (!['ENOENT', 'ENOTEMPTY'].includes((error as { code?: string }).code ?? ''))
+        failures.push(
+          `Directory cleanup failed for ${directory}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+  }
+  try {
+    failures.push(...preservedConfigurationFailures(input.snapshot));
+  } catch (error) {
+    failures.push(
+      `Post-rollback configuration check failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return failures;
+}
+
 export type SetupCredentials = {
   ingestKey: string;
   identityKey: string;
   installationId: string;
+};
+
+type SetupMode = 'service' | 'container';
+
+type InstallationState = {
+  schema: 'semantic_layer_openclaw_installation_v1';
+  endpoint: string;
+  installationId: string;
+  maxSpoolBytes: number;
+  pluginPackage: typeof PLUGIN_PACKAGE;
+  pluginVersion: typeof PLUGIN_VERSION;
+  serviceName: string;
+  setupMode: SetupMode;
 };
 
 type ExistingSetupCredentials = Omit<SetupCredentials, 'installationId'> & {
@@ -723,6 +1448,7 @@ export function createPluginConfig(input: {
     serviceName: input.serviceName,
     outputDirectory: input.outputDirectory,
     spoolDirectory: input.spoolDirectory,
+    maxSpoolBytes: DEFAULT_OPENCLAW_SPOOL_BYTES,
     installationId: input.credentials.installationId,
     ingestKey: { source: 'file', provider: 'semantic_layer', id: '/ingestKey' },
     identityKey: {
@@ -831,6 +1557,37 @@ async function readSetupCredentials(
   };
 }
 
+async function readInstallationState(): Promise<InstallationState> {
+  const path = installationStatePath();
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink())
+    throw new Error(`${path} must be a regular file, not a link.`);
+  if ((metadata.mode & 0o077) !== 0)
+    throw new Error(`${path} must be owner-only (chmod 600).`);
+  if (typeof process.getuid === 'function' && metadata.uid !== process.getuid())
+    throw new Error(`${path} must be owned by the current user.`);
+  const value = JSON.parse(await readFile(path, 'utf8')) as Record<
+    string,
+    unknown
+  >;
+  if (
+    value.schema !== 'semantic_layer_openclaw_installation_v1' ||
+    typeof value.endpoint !== 'string' ||
+    !value.endpoint.startsWith('https://') ||
+    typeof value.installationId !== 'string' ||
+    !isInstallationId(value.installationId) ||
+    value.maxSpoolBytes !== DEFAULT_OPENCLAW_SPOOL_BYTES ||
+    value.pluginPackage !== PLUGIN_PACKAGE ||
+    value.pluginVersion !== PLUGIN_VERSION ||
+    typeof value.serviceName !== 'string' ||
+    !value.serviceName ||
+    (value.setupMode !== 'service' && value.setupMode !== 'container')
+  ) {
+    throw new Error(`${path} does not contain valid managed installation state.`);
+  }
+  return value as InstallationState;
+}
+
 async function writeCredentialsAtomically(
   value: SetupCredentials,
 ): Promise<void> {
@@ -840,6 +1597,25 @@ async function writeCredentialsAtomically(
     mode: 0o600,
     flag: 'wx',
   });
+  await chmod(temporaryPath, 0o600);
+  await rename(temporaryPath, path);
+}
+
+async function writeInstallationStateAtomically(
+  value: InstallationState,
+): Promise<void> {
+  await writeOwnerFileAtomically(
+    installationStatePath(),
+    `${JSON.stringify(value)}\n`,
+  );
+}
+
+async function writeOwnerFileAtomically(
+  path: string,
+  value: string | Buffer,
+): Promise<void> {
+  const temporaryPath = `${path}.next-${process.pid}-${Date.now()}`;
+  await writeFile(temporaryPath, value, { mode: 0o600, flag: 'wx' });
   await chmod(temporaryPath, 0o600);
   await rename(temporaryPath, path);
 }
@@ -920,10 +1696,35 @@ function firstVersion(value: string): string | undefined {
 }
 
 function credentialsPath(): string {
-  const state = process.env.OPENCLAW_STATE_DIR
-    ? resolve(process.env.OPENCLAW_STATE_DIR)
-    : join(homedir(), '.openclaw');
-  return join(state, 'semantic-layer', 'credentials.json');
+  return join(managedStateDirectory(), 'semantic-layer', 'credentials.json');
+}
+
+function installationStatePath(): string {
+  return join(
+    managedStateDirectory(),
+    'semantic-layer',
+    'installation.json',
+  );
+}
+
+function managedStateDirectory(): string {
+  const configuredState = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (configuredState) return resolveUserPath(configuredState);
+  const configuredFile = process.env.OPENCLAW_CONFIG_PATH?.trim();
+  if (configuredFile) return dirname(resolveUserPath(configuredFile));
+  const configuredHome = process.env.OPENCLAW_HOME?.trim();
+  if (configuredHome)
+    return join(resolveUserPath(configuredHome), '.openclaw');
+  const activeConfig = runOpenClaw(['config', 'file']);
+  if (activeConfig.ok && activeConfig.stdout.trim())
+    return dirname(resolveUserPath(activeConfig.stdout.trim()));
+  return join(homedir(), '.openclaw');
+}
+
+function resolveUserPath(value: string): string {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return resolve(homedir(), value.slice(2));
+  return resolve(value);
 }
 
 function optionValue(
@@ -933,6 +1734,40 @@ function optionValue(
   const index = args?.indexOf(name) ?? -1;
   const value = index >= 0 ? args?.[index + 1] : undefined;
   return value && !value.startsWith('--') ? value.trim() : undefined;
+}
+
+function validateCommandArguments(command: string, args: string[]): void {
+  const valueOptions =
+    command === 'setup'
+      ? new Set(['--endpoint', '--service-name', '--installation-id'])
+      : new Set<string>();
+  const flagOptions =
+    command === 'setup'
+      ? new Set(['--container', '--dry-run'])
+      : command === 'doctor' || command === 'uninstall'
+        ? new Set(['--container'])
+        : new Set<string>();
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const option = args[index];
+    if (!option) continue;
+    if (seen.has(option)) throw new TypeError(`${option} may be provided only once.`);
+    if (flagOptions.has(option)) {
+      seen.add(option);
+      continue;
+    }
+    if (valueOptions.has(option)) {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--'))
+        throw new TypeError(`${option} requires a value.`);
+      seen.add(option);
+      index += 1;
+      continue;
+    }
+    throw new TypeError(`Unknown option for ${command}: ${option}`);
+  }
+  if (command === 'uninstall' && !seen.has('--container'))
+    throw new TypeError('uninstall currently requires --container.');
 }
 
 export function installationIdOption(
@@ -962,16 +1797,34 @@ export function installationIdOption(
 export function setupCommandPlan(
   packageSpec: string,
   patchPath: string,
+  mode: SetupMode = 'service',
 ): string[][] {
-  return [
+  const replacePaths = [
+    '--replace-path',
+    `plugins.entries.${PLUGIN_ID}`,
+    '--replace-path',
+    'secrets.providers.semantic_layer',
+  ];
+  const commands = [
     pluginInstallCommand(packageSpec),
-    ['config', 'patch', '--file', patchPath, '--dry-run'],
-    ['config', 'patch', '--file', patchPath],
+    [
+      'config',
+      'patch',
+      '--file',
+      patchPath,
+      ...replacePaths,
+      '--dry-run',
+    ],
+    ['config', 'patch', '--file', patchPath, ...replacePaths],
     ['config', 'validate'],
     ['secrets', 'audit', '--check'],
-    ['security', 'audit', '--json'],
-    ['gateway', 'restart'],
   ];
+  if (mode === 'service')
+    commands.push(
+      ['security', 'audit', '--json'],
+      ['gateway', 'restart'],
+    );
+  return commands;
 }
 
 function pluginInstallCommand(packageSpec: string): string[] {
@@ -980,13 +1833,18 @@ function pluginInstallCommand(packageSpec: string): string[] {
     : ['plugins', 'install', packageSpec];
 }
 
-export function doctorCommandPlan(): string[][] {
-  return [
+export function doctorCommandPlan(container = false): string[][] {
+  const commands = [
     ['config', 'validate'],
     ['secrets', 'audit', '--check'],
-    ['security', 'audit', '--json'],
-    ['gateway', 'status', '--deep', '--require-rpc'],
   ];
+  if (container) commands.push(['gateway', 'health', '--json']);
+  else
+    commands.push(
+      ['security', 'audit', '--json'],
+      ['gateway', 'status', '--deep', '--require-rpc'],
+    );
+  return commands;
 }
 
 export function generateIdentityKey(): string {
@@ -1088,7 +1946,10 @@ export async function hiddenQuestion(
   output: HiddenQuestionOutput = stdout,
 ): Promise<string> {
   if (!input.isTTY || typeof input.setRawMode !== 'function') {
-    const prompt = createInterface({ input: stdin, output: stdout });
+    const prompt = createInterface({
+      input: input as typeof stdin,
+      output: output as typeof stdout,
+    });
     try {
       return (await prompt.question(label)).trim();
     } finally {
@@ -1127,7 +1988,7 @@ export async function hiddenQuestion(
 }
 
 function helpText(): string {
-  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Run doctor while the Gateway is live. Stop the Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
+  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--container] [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor [--container]\n  semantic-layer-openclaw-setup uninstall --container\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Container setup preserves Gateway settings and never restarts the container. Run doctor while the Gateway is live. Stop a service-managed Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
 }
 
 if (

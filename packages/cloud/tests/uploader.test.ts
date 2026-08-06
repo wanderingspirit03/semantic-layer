@@ -12,6 +12,7 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   writeFile,
@@ -534,7 +535,7 @@ describe('semantic-layer-cloud', () => {
     await uploader.shutdown();
   });
 
-  it('uploads the exact sealed bundle bytes and leaves the receipt outside it', async () => {
+  it('uploads the exact sealed bundle bytes and retains only its acknowledgement receipt', async () => {
     const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-'));
     roots.push(root);
     const artifact = await copyExample(root);
@@ -603,10 +604,8 @@ describe('semantic-layer-cloud', () => {
     const acked = await readdir(join(root, 'spool', 'acked'));
     expect(acked).toEqual([queued.bundleDigest]);
     expect(
-      await readdir(
-        join(root, 'spool', 'acked', queued.bundleDigest, 'bundle'),
-      ),
-    ).toEqual(['manifest.json', 'trace.jsonl']);
+      await readdir(join(root, 'spool', 'acked', queued.bundleDigest)),
+    ).toEqual(['receipt.json']);
     expect(
       JSON.parse(
         await readFile(
@@ -620,24 +619,6 @@ describe('semantic-layer-cloud', () => {
     });
     expect((await stat(join(root, 'spool'))).mode & 0o777).toBe(0o700);
     expect(
-      (await stat(join(root, 'spool', 'acked', queued.bundleDigest, 'bundle')))
-        .mode & 0o777,
-    ).toBe(0o700);
-    expect(
-      (
-        await stat(
-          join(
-            root,
-            'spool',
-            'acked',
-            queued.bundleDigest,
-            'bundle',
-            'manifest.json',
-          ),
-        )
-      ).mode & 0o777,
-    ).toBe(0o600);
-    expect(
       (
         await stat(
           join(root, 'spool', 'acked', queued.bundleDigest, 'receipt.json'),
@@ -647,7 +628,7 @@ describe('semantic-layer-cloud', () => {
     await uploader.shutdown();
   });
 
-  it('does not automatically delete acknowledged bundles', async () => {
+  it('compacts a legacy acknowledged bundle after restart', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'semantic-layer-cloud-acked-retention-'),
     );
@@ -681,6 +662,11 @@ describe('semantic-layer-cloud', () => {
     await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, {
       mode: 0o600,
     });
+    await cp(
+      artifact,
+      join(spoolDirectory, 'acked', queued.bundleDigest, 'bundle'),
+      { recursive: true },
+    );
     await uploader.shutdown();
 
     const restarted = createCloudUploader({
@@ -693,7 +679,116 @@ describe('semantic-layer-cloud', () => {
     expect(await readdir(join(spoolDirectory, 'acked'))).toEqual([
       queued.bundleDigest,
     ]);
+    expect(
+      await readdir(join(spoolDirectory, 'acked', queued.bundleDigest)),
+    ).toEqual(['receipt.json']);
     await restarted.shutdown();
+  });
+
+  it('preserves an acknowledged bundle when its receipt is not valid', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-invalid-acked-receipt-'),
+    );
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const spoolDirectory = join(root, 'spool');
+    const seed = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+    const queued = await seed.enqueueArtifact(artifact);
+    await seed.shutdown();
+    const digest = queued.bundleDigest;
+    const acknowledged = join(spoolDirectory, 'acked', digest);
+    await rename(join(spoolDirectory, 'pending', digest), acknowledged);
+    await writeFile(
+      join(acknowledged, 'receipt.json'),
+      '{"status":"acknowledged","bundle_digest":"wrong"}\n',
+      { mode: 0o600 },
+    );
+
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+    });
+    await uploader.flush({ deadlineMs: 0 });
+
+    expect(await readdir(acknowledged)).toEqual(['bundle', 'receipt.json']);
+    expect(uploader.status().ackedBundles).toBe(0);
+    await uploader.shutdown();
+  });
+
+  it('rejects a matching pending directory when its bundle bytes were changed', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-invalid-pending-'),
+    );
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const spoolDirectory = join(root, 'spool');
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+    const queued = await uploader.enqueueArtifact(artifact);
+    await writeFile(
+      join(
+        spoolDirectory,
+        'pending',
+        queued.bundleDigest,
+        'bundle',
+        'trace.jsonl',
+      ),
+      '{"changed":true}\n',
+      { mode: 0o600 },
+    );
+
+    await expect(uploader.enqueueArtifact(artifact)).rejects.toMatchObject({
+      code: 'PENDING_STATE_INVALID',
+    });
+    await uploader.shutdown();
+  });
+
+  it('uses a valid acknowledgement receipt without another network request', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-acked-dedup-'),
+    );
+    roots.push(root);
+    const artifact = await copyExample(root);
+    let requests = 0;
+    const endpoint = await listen((request, response) => {
+      requests += 1;
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () =>
+        respondSuccess(request, response, Buffer.concat(chunks)),
+      );
+    });
+    const spoolDirectory = join(root, 'spool');
+    const uploader = createCloudUploader({
+      endpoint,
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+    });
+    const queued = await uploader.enqueueArtifact(artifact);
+    await uploader.flush({ deadlineMs: 5_000 });
+    const completedRequests = requests;
+
+    await expect(uploader.enqueueArtifact(artifact)).resolves.toMatchObject({
+      bundleId: queued.bundleId,
+      bundleDigest: queued.bundleDigest,
+      state: 'acked',
+    });
+    expect(requests).toBe(completedRequests);
+    await uploader.shutdown();
   });
 
   it('keeps an outage pending and resumes it after process restart', async () => {

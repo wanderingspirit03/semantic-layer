@@ -1,6 +1,6 @@
 {
   "name": "semantic-layer-openclaw",
-  "version": "0.1.0-pilot.1",
+  "version": "0.1.0-pilot.2",
   "type": "module",
   "description": "OpenClaw semantic trace capture and durable cloud upload plugin",
   "license": "MIT",
@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "semantic-layer-capture": "0.2.0-beta.0",
-    "semantic-layer-cloud": "0.1.0-pilot.1"
+    "semantic-layer-cloud": "0.1.0-pilot.2"
   },
   "peerDependencies": {
     "openclaw": ">=2026.5.5 || 2026.7.1-1 || 2026.7.1-2"
@@ -36,7 +36,7 @@
     "openclaw": "2026.5.5",
     "openclaw-qualified-current": "npm:openclaw@2026.7.1-2",
     "semantic-layer-capture": "0.2.0-beta.0",
-    "semantic-layer-cloud": "0.1.0-pilot.1",
+    "semantic-layer-cloud": "0.1.0-pilot.2",
     "typescript": "~5.7.0",
     "vitest": "^1.2.0"
   },
