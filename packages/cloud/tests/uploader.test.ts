@@ -786,31 +786,35 @@ describe('semantic-layer-cloud', () => {
     roots.push(root);
     const artifact = await copyExample(root);
     const spoolDirectory = join(root, 'spool');
+    const originalKey = process.env.SEMANTIC_LAYER_INGEST_KEY;
+    delete process.env.SEMANTIC_LAYER_INGEST_KEY;
     const uploader = createCloudUploader({
       endpoint: 'https://ingest.invalid',
-      ingestKey: 'test-ingest-key-123456',
       spoolDirectory,
-      fetch: async () => {
-        throw new Error('offline');
-      },
     });
-    const queued = await uploader.enqueueArtifact(artifact);
-    await writeFile(
-      join(
-        spoolDirectory,
-        'pending',
-        queued.bundleDigest,
-        'bundle',
-        'trace.jsonl',
-      ),
-      '{"changed":true}\n',
-      { mode: 0o600 },
-    );
+    try {
+      const queued = await uploader.enqueueArtifact(artifact);
+      await writeFile(
+        join(
+          spoolDirectory,
+          'pending',
+          queued.bundleDigest,
+          'bundle',
+          'trace.jsonl',
+        ),
+        '{"changed":true}\n',
+        { mode: 0o600 },
+      );
 
-    await expect(uploader.enqueueArtifact(artifact)).rejects.toMatchObject({
-      code: 'PENDING_STATE_INVALID',
-    });
-    await uploader.shutdown();
+      await expect(uploader.enqueueArtifact(artifact)).rejects.toMatchObject({
+        code: 'PENDING_STATE_INVALID',
+      });
+    } finally {
+      await uploader.shutdown();
+      if (originalKey === undefined)
+        delete process.env.SEMANTIC_LAYER_INGEST_KEY;
+      else process.env.SEMANTIC_LAYER_INGEST_KEY = originalKey;
+    }
   });
 
   it('uses a valid acknowledgement receipt without another network request', async () => {
