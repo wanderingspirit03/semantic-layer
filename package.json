@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local-first semantic tracing SDK for TypeScript and Python agent systems",
   "scripts": {
-    "test": "pnpm -r --filter './packages/**' --if-present run test",
+    "test": "pnpm -r --filter './packages/**' build && pnpm -r --filter './packages/**' --if-present run test",
     "test:python": "uv run --project packages/python --all-extras pytest packages/python/tests",
     "test:all": "pnpm test && pnpm test:python",
     "test:e2e:local": "node scripts/cloud-integration.mjs e2e",
