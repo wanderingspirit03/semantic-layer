@@ -12,14 +12,14 @@ describe('published setup package contract', () => {
     );
 
     expect(packageJson.name).toBe('semantic-layer-openclaw-setup');
-    expect(packageJson.version).toBe('0.1.0-pilot.5');
+    expect(packageJson.version).toBe('0.1.0-pilot.6');
     expect(packageJson.bin).toEqual({
       'semantic-layer-openclaw-setup': 'dist/bin.js',
     });
     expect(packageJson.openclaw).toBeUndefined();
     expect(packageJson.dependencies).toEqual({
       json5: '^2.2.3',
-      'semantic-layer-cloud': '0.1.0-pilot.2',
+      'semantic-layer-cloud': '0.1.0-pilot.3',
     });
     expect(packageJson.engines.node).toBe(
       '>=22.14.0 <23 || >=24.0.0 <25 || >=25.9.0',

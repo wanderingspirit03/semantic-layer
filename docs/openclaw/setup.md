@@ -32,14 +32,14 @@ containers, run setup once on each one with its own installation ID and key.
 
 ## Container installation
 
-The pinned container pilot uses setup package `0.1.0-pilot.5` and runtime
-plugin `0.1.0-pilot.2`.
+The pinned container pilot uses setup package `0.1.0-pilot.6` and runtime
+plugin `0.1.0-pilot.3`.
 
 Run this command inside the OpenClaw container as the same user that runs
 OpenClaw:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.5 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
@@ -79,8 +79,7 @@ OK. Restart the container, then run doctor --container.
 ```
 
 The exact root follows the active OpenClaw home or state directory. Setup
-prints the resolved paths. On the Tavi pilot container, that root is normally
-`/customer/.openclaw` on the persistent volume.
+prints the resolved paths.
 
 Restart the container through the platform that owns it. Do not run an
 OpenClaw service restart for this container flow.
@@ -88,24 +87,30 @@ OpenClaw service restart for this container flow.
 After Gateway is healthy, run:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.5 doctor --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 doctor --container
 ```
 
 Doctor is read only. It checks the pinned plugin identity, persistent plugin
-location, plugin hooks,
-credentials, installation state, file permissions, endpoint authentication,
-local spool, the plugins that were enabled before setup, and the running
-Gateway. It does not require a local bind or service manager, and it does not
-create a trace.
+location, plugin hooks, credentials, installation state, file permissions,
+endpoint authentication, local spool, the plugins that were enabled before
+setup, and the running Gateway. In container mode, doctor reads the configured
+Gateway port. It uses an owner only temporary config to check the local Gateway
+with the existing authentication settings, then removes that file. It does not
+change the live config, put a Gateway secret on the command line, require a
+local bind or service manager, or create a trace.
+
+Setup, doctor, and uninstall also remove owner only temporary config files left
+by an earlier interrupted command. They only remove files created by this setup
+package after confirming that the process which created them is no longer
+running.
 
 The final success line is:
 
 ```text
-OK OpenClaw 2026.5.5; Node 24.14.0; exact-qualified host; plugin runtime and owner-only credentials verified; container Gateway healthy.
+OK OpenClaw 2026.5.5; Node 24.0.0; exact-qualified host; plugin runtime and owner-only credentials verified; container Gateway healthy.
 ```
 
-The Node.js version in this example is the Tavi pilot version. The command
-prints the version that is actually running.
+The command prints the Node.js version that is actually running.
 
 ## Confirm one complete trace
 
@@ -165,13 +170,19 @@ acknowledgement.
 Run this command inside the container:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.5 uninstall --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 uninstall --container --acknowledge-external-restart
 ```
 
 The command removes the Semantic Layer plugin, its config entry, its secret
 provider, credentials, and installation state. It preserves Gateway settings,
 Latitude, every other plugin, local traces, and the upload spool. It prints the
-installation ID that Arcus must revoke and does not restart the container.
+installation ID that Arcus must revoke and does not restart the container. The
+acknowledgement flag confirms that the operator can restart the owning
+container or machine from its external control plane. The warning is printed
+before uninstall starts because removing a foreground plugin can make Gateway
+exit cleanly. The clean config is installed before the package is removed. If
+the platform stops the container during removal, start it again and run the
+same uninstall command to finish removing any owner only installation state.
 
 Restart the container through its platform. Confirm that OpenClaw and the other
 plugins still work. Send the printed installation ID to the Arcus pilot contact

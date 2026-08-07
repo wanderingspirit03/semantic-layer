@@ -295,6 +295,209 @@ def test_shutdown_reports_persisted_source_loss_counts(
     assert closed.losses == {"fixture_missing_evidence": 3}
 
 
+def test_final_secret_scan_seals_one_safe_omission(tmp_path: Path) -> None:
+    secret = "native-identity-secret"
+    receipts: list[Any] = []
+
+    class SecretIdentitySource(CaptureSource):
+        metadata = {
+            "name": "secret-identity",
+            "seam": "fixture.callback",
+            "identity_domain": "fixture.operation",
+            "coverage": [],
+        }
+
+        def install(self, sink: Any) -> Any:
+            opened = sink.open_trace(
+                {
+                    "name": "safe-root",
+                    "semantic": {"type": "agent.run", "name": "safe-root"},
+                }
+            )
+            assert opened.accepted and opened.identity is not None
+            receipts.append(
+                sink.record(
+                    {
+                        "kind": "state",
+                        "phase": "event",
+                        "name": "omitted-event",
+                        "trace": opened.identity,
+                        "parent_record_id": opened.record_id,
+                        "native_identity": secret,
+                        "native": {"body": b"blob-body"},
+                        "semantic": {"type": "state.omitted", "value": True},
+                    }
+                )
+            )
+            sink.record(
+                {
+                    "kind": "lifecycle",
+                    "phase": "end",
+                    "name": "safe-root",
+                    "trace": opened.identity,
+                    "parent_record_id": opened.record_id,
+                    "native": None,
+                    "semantic": {"type": "agent.run", "status": "succeeded"},
+                }
+            )
+
+            class Lifecycle:
+                def deactivate(self) -> None:
+                    return None
+
+                def drain(self) -> None:
+                    return None
+
+            return Lifecycle()
+
+    capture = initialize(
+        output=tmp_path,
+        service_name="safe-final-scan-omission",
+        secret_values=[secret],
+    )
+    capture.install_source(SecretIdentitySource())
+    assert not receipts[0].accepted
+    assert receipts[0].reason == "payload_omitted"
+
+    closed = capture.shutdown()
+    artifact = Path(closed.artifact_path)
+    trace_text = (artifact / "trace.jsonl").read_text()
+    assert closed.state == "closed"
+    assert closed.rejected == 0
+    assert closed.last_error is None
+    assert closed.losses == {"scrubber_failure_payload_omitted": 1}
+    assert secret not in trace_text
+    losses = [row for row in _rows(artifact) if row["kind"] == "loss"]
+    assert len(losses) == 1
+    assert losses[0]["data"] == {
+        "reason": "scrubber_failure_payload_omitted",
+        "stage": "scrub",
+        "count": 1,
+        "recoverable": True,
+        "path": "/native_identity",
+    }
+    assert not (artifact / "blobs").exists()
+    assert validate_artifact(artifact, secret_values=[secret]).valid
+
+
+def test_final_scan_does_not_issue_identity_for_omitted_root(tmp_path: Path) -> None:
+    secret = "root-native-identity-secret"
+    receipts: list[Any] = []
+
+    class SecretRootSource(CaptureSource):
+        metadata = {
+            "name": "secret-root",
+            "seam": "fixture.callback",
+            "identity_domain": "fixture.operation",
+            "coverage": [],
+        }
+
+        def install(self, sink: Any) -> Any:
+            receipts.append(
+                sink.open_trace(
+                    {
+                        "name": "omitted-root",
+                        "native_identity": secret,
+                        "native": {"body": b"blob-body"},
+                        "semantic": {"type": "agent.run", "name": "omitted-root"},
+                    }
+                )
+            )
+
+            class Lifecycle:
+                def deactivate(self) -> None:
+                    return None
+
+                def drain(self) -> None:
+                    return None
+
+            return Lifecycle()
+
+    capture = initialize(
+        output=tmp_path,
+        service_name="safe-root-omission",
+        secret_values=[secret],
+    )
+    capture.install_source(SecretRootSource())
+    assert not receipts[0].accepted
+    assert receipts[0].reason == "payload_omitted"
+    assert receipts[0].identity is None
+
+    closed = capture.shutdown()
+    artifact = Path(closed.artifact_path)
+    rows = _rows(artifact)
+    assert closed.state == "closed"
+    assert closed.rejected == 0
+    assert closed.losses == {"scrubber_failure_payload_omitted": 1}
+    assert not any(row["kind"] == "run.start" for row in rows)
+    assert not (artifact / "blobs").exists()
+    assert validate_artifact(artifact, secret_values=[secret]).valid
+
+
+def test_final_scan_rejects_unsafe_fallback_once_without_recursion(
+    tmp_path: Path,
+) -> None:
+    secret = "semantic_layer.loss"
+    receipts: list[Any] = []
+
+    class UnsafeFallbackSource:
+        metadata = {
+            "name": "fixture:unsafe-fallback",
+            "seam": "fixture.open",
+            "identity_domain": "fixture.operation",
+            "coverage": [],
+        }
+
+        def install(self, sink: Any) -> Any:
+            opened = sink.open_trace(
+                {
+                    "name": "safe-root",
+                    "semantic": {"type": "agent.run", "name": "safe-root"},
+                }
+            )
+            assert opened.accepted
+            receipts.append(
+                sink.record(
+                    {
+                        "kind": "state",
+                        "phase": "event",
+                        "name": "omitted-event",
+                        "trace": opened.identity,
+                        "parent_record_id": opened.record_id,
+                        "native_identity": secret,
+                        "native": None,
+                        "semantic": {"type": "state.omitted", "value": True},
+                    }
+                )
+            )
+
+            class Lifecycle:
+                def deactivate(self) -> None:
+                    return None
+
+                def drain(self) -> None:
+                    return None
+
+            return Lifecycle()
+
+    capture = initialize(
+        output=tmp_path,
+        service_name="unsafe-final-scan-fallback",
+        secret_values=[secret],
+    )
+    capture.install_source(UnsafeFallbackSource())
+    assert not receipts[0].accepted
+    assert receipts[0].reason == "fallback_failed"
+
+    closed = capture.shutdown()
+    trace_text = (Path(closed.artifact_path) / "trace.jsonl").read_text()
+    assert closed.state == "closed"
+    assert closed.rejected == 1
+    assert closed.last_error is None
+    assert closed.losses == {}
+    assert secret not in trace_text
+
+
 class _NestedSource(CaptureSource):
     metadata = {
         "name": "nested-fixture",

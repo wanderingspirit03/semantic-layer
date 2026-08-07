@@ -15,7 +15,7 @@ import { assertNoSymbolicLinkComponents, secureOwnerOnly } from './permissions.j
 import type { OwnershipManifest } from './source-ownership.js';
 
 const SDK_NAME = 'semantic-layer-capture';
-const SDK_VERSION = '0.2.0-beta.0';
+const SDK_VERSION = '0.2.0-beta.1';
 const CONTROL_RESERVE_BYTES = 64 * 1024;
 const PROJECTION_OVERHEAD_BYTES = 2 * 1024;
 
@@ -225,6 +225,7 @@ export class LocalArtifact {
     stagedBlobs: readonly CapturedBlob[] = [],
     allowDuringClosing = false,
     strictControl = false,
+    allowPayloadOmission = true,
   ): AdmissionReceipt {
     if (this.state !== 'accepting' && !((control || allowDuringClosing) && this.state === 'closing')) {
       return rejected('runtime_closed');
@@ -246,27 +247,22 @@ export class LocalArtifact {
     };
     const rawEncoded = Buffer.from(`${JSON.stringify(row)}\n`);
     if (!this.scanner.scan(rawEncoded)) {
-      this.markRejected('scrubber_failure_payload_omitted');
-      const structural: EventDraft = {
-        trace_id: draft.trace_id,
-        source: runtimeEventSource(),
-        event_kind: 'unknown',
-        phase: 'event',
-        name: 'semantic_layer.payload_omitted',
-        native: null,
-        semantic: { payload_omitted: true },
-        correlation: {},
-        loss_refs: [],
-        blob_refs: [],
-      };
-      const structuralReceipt = this.admit(structural, true);
-      const lossReceipt = this.recordLoss(
-        'scrubber_failure_payload_omitted', draft.trace_id,
-        structuralReceipt.accepted ? structuralReceipt.recordId : null,
+      if (!allowPayloadOmission) {
+        this.markRejected('scrubber_failure_payload_omitted');
+        return rejected('fallback_failed');
+      }
+      this.projector.retireOmitted(row);
+      const loss = this.recordLoss(
+        'scrubber_failure_payload_omitted',
+        draft.trace_id,
+        undefined,
+        blockedTopLevelPath(row, this.scanner),
+        undefined,
+        1,
       );
       return rejected(
-        'final_secret_scan_blocked',
-        Promise.all([structuralReceipt.settled, lossReceipt.settled]).then(() => undefined),
+        loss.accepted ? 'payload_omitted' : 'fallback_failed',
+        loss.settled,
       );
     }
     // Projection is stateful, so capacity is reserved from a conservative upper bound
@@ -391,7 +387,12 @@ export class LocalArtifact {
       loss: {
         reason,
         stage: lossStage(reason),
-        recoverable: ['credential_redaction', 'unsafe_getter_avoided', 'unsafe_helper_avoided'].includes(reason),
+        recoverable: [
+          'credential_redaction',
+          'scrubber_failure_payload_omitted',
+          'unsafe_getter_avoided',
+          'unsafe_helper_avoided',
+        ].includes(reason),
         ...(affectedRecordId ? { affected_record_id: affectedRecordId } : {}),
         ...(path ? { affected_path: path } : {}),
         ...(bytes === undefined ? {} : { bytes }),
@@ -399,7 +400,7 @@ export class LocalArtifact {
       },
       loss_refs: [],
       blob_refs: [],
-    }, true);
+    }, true, [], false, false, false);
   }
 
   async flush(): Promise<CaptureStatus> {
@@ -652,6 +653,17 @@ export class LocalArtifact {
     }
     return changed;
   }
+}
+
+function blockedTopLevelPath(
+  row: SemanticCaptureEventV1,
+  scanner: CredentialScanner,
+): string {
+  for (const key of Object.keys(row) as Array<keyof SemanticCaptureEventV1>) {
+    const encoded = Buffer.from(JSON.stringify({ [key]: row[key] }));
+    if (!scanner.scan(encoded)) return `/${String(key)}`;
+  }
+  return '/record';
 }
 
 function runtimeEventSource(): SemanticCaptureEventV1['source'] {

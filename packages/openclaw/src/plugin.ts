@@ -54,7 +54,7 @@ export type PluginApi = {
 export type PluginDefinition = OpenClawPluginDefinition & {
   id: 'semantic-layer-openclaw';
   name: 'Semantic Layer';
-  version: '0.1.0-pilot.2';
+  version: '0.1.0-pilot.3';
   register(api: PluginApi): void;
 };
 
@@ -132,7 +132,7 @@ export function createPluginDefinition(
     name: 'Semantic Layer',
     description:
       'Capture OpenClaw runs as semantic traces and enqueue sealed bundles for upload.',
-    version: '0.1.0-pilot.2',
+    version: '0.1.0-pilot.3',
     register(api) {
       const runtime = new CaptureRuntime(api, dependencies, options);
       runtime.registerHooks();
@@ -176,7 +176,7 @@ class CaptureRuntime {
       this.logOnce(
         'invalid-config',
         'error',
-        'Semantic Layer capture is disabled: configuration is incomplete. Run npx -y semantic-layer-openclaw-setup@0.1.0-pilot.4 doctor.',
+        'Semantic Layer capture is disabled: configuration is incomplete. Run npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 doctor.',
       );
     } else if (
       hostVersion &&

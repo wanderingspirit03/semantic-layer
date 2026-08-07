@@ -72,6 +72,230 @@ def _row(
     return row
 
 
+def test_retires_model_tool_and_lifecycle_correlation_after_omission() -> None:
+    projector = SemanticProjector()
+    projector.project(
+        _row(
+            record_id="root-start",
+            event_kind="lifecycle",
+            phase="start",
+            name="run",
+            semantic={"type": "agent.run", "name": "run"},
+        )
+    )
+    projector.project(
+        _row(
+            record_id="model-start-1",
+            event_kind="model",
+            phase="start",
+            name="model",
+            native_identity="model-identity",
+            parent_record_id="root-start",
+            semantic={"type": "model.request", "model": "fixture"},
+        )
+    )
+    projector.retire_omitted(
+        _row(
+            record_id="model-end-omitted",
+            event_kind="model",
+            phase="end",
+            name="model",
+            native_identity="model-identity",
+            parent_record_id="model-start-1",
+            semantic={"type": "model.response", "status": "completed"},
+        )
+    )
+    reused_model = projector.project(
+        _row(
+            record_id="model-start-2",
+            event_kind="model",
+            phase="start",
+            name="model",
+            native_identity="model-identity",
+            parent_record_id="root-start",
+            semantic={"type": "model.request", "model": "fixture"},
+        )
+    )
+    assert [row["kind"] for row in reused_model] == ["model.request"]
+
+    projector.project(
+        _row(
+            record_id="tool-start-1",
+            event_kind="tool",
+            phase="start",
+            name="lookup",
+            native_identity="tool-identity",
+            parent_record_id="root-start",
+            semantic={"type": "tool.execution", "name": "lookup", "input": {}},
+        )
+    )
+    projector.retire_omitted(
+        _row(
+            record_id="tool-end-omitted",
+            event_kind="tool",
+            phase="end",
+            name="lookup",
+            native_identity="tool-identity",
+            parent_record_id="tool-start-1",
+            semantic={"type": "tool.result", "status": "succeeded", "output": None},
+        )
+    )
+    reused_tool = projector.project(
+        _row(
+            record_id="tool-start-2",
+            event_kind="tool",
+            phase="start",
+            name="lookup",
+            native_identity="tool-identity",
+            parent_record_id="root-start",
+            semantic={"type": "tool.execution", "name": "lookup", "input": {}},
+        )
+    )
+    assert [row["kind"] for row in reused_tool] == ["tool.call"]
+
+    projector.retire_omitted(
+        _row(
+            record_id="root-end-omitted",
+            event_kind="lifecycle",
+            phase="end",
+            name="run",
+            parent_record_id="root-start",
+            semantic={"type": "agent.run", "status": "succeeded"},
+        )
+    )
+    reused_root = projector.project(
+        _row(
+            record_id="root-start-2",
+            event_kind="lifecycle",
+            phase="start",
+            name="run two",
+            semantic={"type": "agent.run", "name": "run two"},
+        )
+    )
+    assert [row["kind"] for row in reused_root] == ["run.start"]
+
+
+def test_omission_keeps_ambiguous_correlations_and_retires_proposal() -> None:
+    projector = SemanticProjector()
+    projector.project(
+        _row(
+            record_id="root-start",
+            event_kind="lifecycle",
+            phase="start",
+            name="run",
+            semantic={"type": "agent.run", "name": "run"},
+        )
+    )
+    for identity in ("model-a", "model-b"):
+        projector.project(
+            _row(
+                record_id=f"{identity}-start",
+                event_kind="model",
+                phase="start",
+                name="model",
+                native_identity=identity,
+                parent_record_id="root-start",
+                semantic={"type": "model.request", "model": "fixture"},
+            )
+        )
+    projector.retire_omitted(
+        _row(
+            record_id="ambiguous-model-end",
+            event_kind="model",
+            phase="end",
+            name="model",
+            native_identity="model-b",
+            parent_record_id="model-a-start",
+            semantic={"type": "model.response", "status": "completed"},
+        )
+    )
+    for identity in ("model-a", "model-b"):
+        duplicate = projector.project(
+            _row(
+                record_id=f"{identity}-duplicate",
+                event_kind="model",
+                phase="start",
+                name="model",
+                native_identity=identity,
+                parent_record_id="root-start",
+                semantic={"type": "model.request", "model": "fixture"},
+            )
+        )
+        assert duplicate[0]["data"]["reason"] == "duplicate_active_model_identity"
+
+    for identity in ("tool-a", "tool-b"):
+        projector.project(
+            _row(
+                record_id=f"{identity}-start",
+                event_kind="tool",
+                phase="start",
+                name="lookup",
+                native_identity=identity,
+                parent_record_id="root-start",
+                semantic={"type": "tool.execution", "name": "lookup", "input": {}},
+            )
+        )
+    projector.retire_omitted(
+        _row(
+            record_id="ambiguous-tool-end",
+            event_kind="tool",
+            phase="end",
+            name="lookup",
+            native_identity="tool-b",
+            parent_record_id="tool-a-start",
+            semantic={"type": "tool.result", "status": "succeeded", "output": None},
+        )
+    )
+    for identity in ("tool-a", "tool-b"):
+        duplicate = projector.project(
+            _row(
+                record_id=f"{identity}-duplicate",
+                event_kind="tool",
+                phase="start",
+                name="lookup",
+                native_identity=identity,
+                parent_record_id="root-start",
+                semantic={"type": "tool.execution", "name": "lookup", "input": {}},
+            )
+        )
+        assert duplicate[0]["data"]["reason"] == "duplicate_active_tool_identity"
+
+    projector.project(
+        _row(
+            record_id="proposal-start",
+            event_kind="tool",
+            phase="start",
+            name="proposed",
+            native_identity="proposal-identity",
+            parent_record_id="root-start",
+            semantic={"type": "tool.proposal", "name": "proposed", "input": {}},
+        )
+    )
+    projector.retire_omitted(
+        _row(
+            record_id="proposal-execution-omitted",
+            event_kind="tool",
+            phase="start",
+            name="proposed",
+            native_identity="proposal-identity",
+            parent_record_id="root-start",
+            semantic={"type": "tool.execution", "name": "proposed", "input": {}},
+        )
+    )
+    reused = projector.project(
+        _row(
+            record_id="proposal-reused",
+            event_kind="tool",
+            phase="start",
+            name="proposed",
+            native_identity="proposal-identity",
+            parent_record_id="root-start",
+            semantic={"type": "tool.proposal", "name": "proposed", "input": {}},
+        )
+    )
+    assert [row["kind"] for row in reused] == ["tool.proposal"]
+
+
 def test_projects_multiple_root_run_pairs_in_one_capture_session() -> None:
     projector = SemanticProjector()
 

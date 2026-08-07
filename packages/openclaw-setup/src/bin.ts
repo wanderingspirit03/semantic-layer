@@ -26,7 +26,7 @@ import { checkCompatibility, type CompatibilityResult } from './preflight.js';
 
 const PLUGIN_ID = 'semantic-layer-openclaw';
 const PLUGIN_PACKAGE = 'semantic-layer-openclaw';
-const PLUGIN_VERSION = '0.1.0-pilot.2';
+const PLUGIN_VERSION = '0.1.0-pilot.3';
 const PACKAGE_SPEC = `npm:${PLUGIN_PACKAGE}@${PLUGIN_VERSION}`;
 const DEFAULT_OPENCLAW_SPOOL_BYTES = 1024 * 1024 * 1024;
 const SECRET_ENVIRONMENT_KEYS = [
@@ -206,6 +206,10 @@ async function doctor(options: { container: boolean }): Promise<number> {
         );
       else if (args[0] === 'security' && args[1] === 'audit')
         failures.push(...securityAuditFailures(result.stdout));
+    }
+    if (options.container) {
+      const gatewayFailure = await containerGatewayHealthFailure();
+      if (gatewayFailure) failures.push(gatewayFailure);
     }
     if (!options.container) {
       const bind = runOpenClaw(['config', 'get', 'gateway.bind']);
@@ -590,6 +594,7 @@ async function setup(options: {
     let configBackup: ConfigFileSnapshot;
     try {
       configBackup = await readActiveConfigFile();
+      await removeStaleConfigFiles(dirname(configBackup.path));
     } catch (error) {
       process.stderr.write(
         `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
@@ -768,7 +773,13 @@ function createOpenClawConfigPatch(input: {
 }
 
 async function uninstall(args: string[]): Promise<number> {
-  if (!args.includes('--container')) return 2;
+  if (
+    !args.includes('--container')
+    || !args.includes('--acknowledge-external-restart')
+  ) return 2;
+  stdout.write(
+    'IMPORTANT The foreground Gateway may exit during uninstall. Restart the owning container or machine from its external control plane after this command.\n',
+  );
   const host = runOpenClaw(['--version']);
   if (!host.ok) {
     process.stderr.write(
@@ -776,15 +787,24 @@ async function uninstall(args: string[]): Promise<number> {
     );
     return 1;
   }
-  let credentials: SetupCredentials;
-  let installationState: InstallationState;
+  let credentials: SetupCredentials | undefined;
+  let installationState: InstallationState | undefined;
   let snapshot: ManagedSetupSnapshot;
   let configBackup: ConfigFileSnapshot;
   try {
-    credentials = await readSetupCredentials();
-    installationState = await readInstallationState();
+    credentials = await readOptionalManagedFile(
+      credentialsPath(),
+      () => readSetupCredentials(),
+    );
+    installationState = await readOptionalManagedFile(
+      installationStatePath(),
+      readInstallationState,
+    );
+    if (!credentials && !installationState)
+      throw new Error('No managed Semantic Layer installation state was found.');
     snapshot = managedSetupSnapshot();
     configBackup = await readActiveConfigFile();
+    await removeStaleConfigFiles(dirname(configBackup.path));
   } catch (error) {
     process.stderr.write(
       `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
@@ -792,11 +812,24 @@ async function uninstall(args: string[]): Promise<number> {
     return 1;
   }
   if (
-    installationState.setupMode !== 'container' ||
-    installationState.installationId !== credentials.installationId
+    (installationState && installationState.setupMode !== 'container')
+    || (
+      installationState
+      && credentials
+      && installationState.installationId !== credentials.installationId
+    )
   ) {
     process.stderr.write(
       'FAIL Owner-only setup state does not describe this container installation.\n',
+    );
+    return 1;
+  }
+  if (
+    !installationState
+    && (snapshot.plugin !== undefined || snapshot.pluginEntry.exists)
+  ) {
+    process.stderr.write(
+      'FAIL Installation state is required before container uninstall can remove an active plugin. Rerun setup --container to restore it.\n',
     );
     return 1;
   }
@@ -814,6 +847,14 @@ async function uninstall(args: string[]): Promise<number> {
     dirname(configBackup.path),
     `.semantic-layer-uninstall-${process.pid}-${Date.now()}.json`,
   );
+  const operationPath = join(
+    dirname(configBackup.path),
+    `.semantic-layer-uninstall-operation-${process.pid}-${Date.now()}.json`,
+  );
+  let liveConfig: 'original' | 'clean' = 'original';
+  let pluginState: 'installed' | 'removed' | 'unknown' = snapshot.plugin
+    ? 'installed'
+    : 'removed';
   try {
     await writeUninstallConfigCandidate(configBackup, candidatePath);
     const dryRun = runOpenClaw(['config', 'validate'], {
@@ -824,34 +865,35 @@ async function uninstall(args: string[]): Promise<number> {
         `OpenClaw config cleanup validation failed: ${dryRun.stderr || dryRun.stdout}`,
       );
     if (snapshot.plugin) {
+      await writeUninstallConfigCandidate(configBackup, operationPath);
       const uninstallDryRun = runOpenClaw(
         ['plugins', 'uninstall', PLUGIN_ID, '--dry-run'],
-        { OPENCLAW_CONFIG_PATH: candidatePath },
+        { OPENCLAW_CONFIG_PATH: operationPath },
       );
       if (!uninstallDryRun.ok)
         throw new Error(
           `OpenClaw plugin uninstall dry-run failed: ${uninstallDryRun.stderr || uninstallDryRun.stdout}`,
         );
+    }
+    await installConfigCandidate(candidatePath, configBackup);
+    liveConfig = 'clean';
+    if (snapshot.plugin) {
       const uninstallResult = runOpenClaw(
         ['plugins', 'uninstall', PLUGIN_ID, '--force'],
-        { OPENCLAW_CONFIG_PATH: candidatePath },
+        { OPENCLAW_CONFIG_PATH: operationPath },
       );
-      if (!uninstallResult.ok)
+      if (!uninstallResult.ok) {
+        try {
+          pluginState = inspectInstalledPlugin() ? 'installed' : 'removed';
+        } catch {
+          pluginState = 'unknown';
+        }
         throw new Error(
           `OpenClaw plugin uninstall failed: ${uninstallResult.stderr || uninstallResult.stdout}`,
         );
+      }
+      pluginState = 'removed';
     }
-    await rm(candidatePath, { force: true });
-    const currentConfig = await readConfigFile(configBackup.path);
-    await writeUninstallConfigCandidate(currentConfig, candidatePath);
-    const finalValidation = runOpenClaw(['config', 'validate'], {
-      OPENCLAW_CONFIG_PATH: candidatePath,
-    });
-    if (!finalValidation.ok)
-      throw new Error(
-        `OpenClaw config cleanup validation failed: ${finalValidation.stderr || finalValidation.stdout}`,
-      );
-    await installConfigCandidate(candidatePath, configBackup);
     const installedConfig = await readConfigFile(configBackup.path);
     const preservedFailures = preservedFileConfigurationFailures(
       configBackup,
@@ -864,28 +906,99 @@ async function uninstall(args: string[]): Promise<number> {
   } catch (error) {
     let restoreFailure = '';
     try {
-      await restoreConfigFile(configBackup);
+      if (liveConfig === 'clean' && pluginState === 'installed') {
+        await restoreConfigFile(configBackup);
+        liveConfig = 'original';
+      }
     } catch (restoreError) {
-      restoreFailure = ` Config restore failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
+      restoreFailure = ` Config recovery failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
     }
     process.stderr.write(
       `FAIL ${error instanceof Error ? error.message : String(error)}${restoreFailure}\n`,
     );
     return 1;
   } finally {
-    await rm(candidatePath, { force: true });
+    await Promise.all([
+      rm(candidatePath, { force: true }),
+      rm(operationPath, { force: true }),
+    ]);
   }
   const stateDirectory = managedStateDirectory();
+  const installationId = installationState?.installationId
+    ?? credentials?.installationId;
   stdout.write('OK Semantic Layer was removed from OpenClaw.\n');
-  stdout.write(`Revoke installation: ${credentials.installationId}\n`);
+  stdout.write(`Revoke installation: ${installationId}\n`);
   stdout.write(
     `Preserved local traces: ${join(stateDirectory, 'semantic-layer', 'traces')}\n`,
   );
   stdout.write(
     `Preserved upload spool: ${join(stateDirectory, 'semantic-layer', 'cloud-spool')}\n`,
   );
-  stdout.write('The container was not restarted.\n');
+  stdout.write(
+    'Restart the owning container or machine now from its external control plane.\n',
+  );
   return 0;
+}
+
+async function containerGatewayHealthFailure(): Promise<string | undefined> {
+  let config: ConfigFileSnapshot;
+  try {
+    config = await readActiveConfigFile();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  const probePath = join(
+    dirname(config.path),
+    `.semantic-layer-doctor-${process.pid}-${Date.now()}.json`,
+  );
+  try {
+    await removeStaleConfigFiles(dirname(config.path));
+    const value = parseConfigObject(config);
+    const gateway = ensureConfigObject(value, 'gateway', 'gateway');
+    gateway.mode = 'local';
+    await writeNewConfigFile(
+      probePath,
+      Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'),
+    );
+    const health = runOpenClaw(['gateway', 'health', '--json'], {
+      OPENCLAW_CONFIG_PATH: probePath,
+    });
+    return health.ok
+      ? undefined
+      : 'OpenClaw container Gateway health failed at the configured local port.';
+  } catch (error) {
+    return `OpenClaw container Gateway health setup failed: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    await rm(probePath, { force: true });
+  }
+}
+
+async function removeStaleConfigFiles(directory: string): Promise<void> {
+  const pattern = /^\.semantic-layer-(?:config|doctor|restore|rollback-config|uninstall|uninstall-operation)-(\d+)-(\d+)\.json$/u;
+  for (const name of await readdir(directory)) {
+    const match = pattern.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (pid === process.pid || processIsAlive(pid)) continue;
+    const path = join(directory, name);
+    const metadata = await lstat(path).catch(() => undefined);
+    if (
+      !metadata
+      || !metadata.isFile()
+      || metadata.isSymbolicLink()
+      || (typeof process.getuid === 'function' && metadata.uid !== process.getuid())
+    ) continue;
+    await rm(path, { force: true });
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: string }).code === 'EPERM';
+  }
 }
 
 async function rotateIngestionKey(): Promise<number> {
@@ -1859,6 +1972,20 @@ async function readInstallationState(): Promise<InstallationState> {
   return value as InstallationState;
 }
 
+async function readOptionalManagedFile<T>(
+  path: string,
+  read: () => Promise<T>,
+): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return undefined;
+    throw new Error(
+      `${path} could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 async function writeCredentialsAtomically(
   value: SetupCredentials,
 ): Promise<void> {
@@ -2015,8 +2142,10 @@ function validateCommandArguments(command: string, args: string[]): void {
   const flagOptions =
     command === 'setup'
       ? new Set(['--container', '--dry-run'])
-      : command === 'doctor' || command === 'uninstall'
+      : command === 'doctor'
         ? new Set(['--container'])
+        : command === 'uninstall'
+          ? new Set(['--container', '--acknowledge-external-restart'])
         : new Set<string>();
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
@@ -2039,6 +2168,14 @@ function validateCommandArguments(command: string, args: string[]): void {
   }
   if (command === 'uninstall' && !seen.has('--container'))
     throw new TypeError('uninstall currently requires --container.');
+  if (
+    command === 'uninstall'
+    && !seen.has('--acknowledge-external-restart')
+  ) {
+    throw new TypeError(
+      'uninstall requires --acknowledge-external-restart because a foreground Gateway exit can stop the owning container or machine.',
+    );
+  }
 }
 
 export function installationIdOption(
@@ -2089,8 +2226,7 @@ function pluginInstallCommand(packageSpec: string): string[] {
 
 export function doctorCommandPlan(container = false): string[][] {
   const commands = [['config', 'validate']];
-  if (container) commands.push(['gateway', 'health', '--json']);
-  else
+  if (!container)
     commands.push(
       ['security', 'audit', '--json'],
       ['gateway', 'status', '--deep', '--require-rpc'],
@@ -2239,7 +2375,7 @@ export async function hiddenQuestion(
 }
 
 function helpText(): string {
-  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--container] [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor [--container]\n  semantic-layer-openclaw-setup uninstall --container\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Container setup preserves Gateway settings and never restarts the container. Run doctor while the Gateway is live. Stop a service-managed Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
+  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--container] [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor [--container]\n  semantic-layer-openclaw-setup uninstall --container --acknowledge-external-restart\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Container setup preserves Gateway settings and never restarts the container. Run doctor while the Gateway is live. Container uninstall can stop a foreground Gateway, so it requires an explicit external restart acknowledgement. Stop a service-managed Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
 }
 
 if (

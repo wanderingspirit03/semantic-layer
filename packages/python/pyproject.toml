@@ -1,6 +1,6 @@
 [project]
 name = "semantic-layer-capture"
-version = "0.2.0b0"
+version = "0.2.0b1"
 description = "Local semantic trace capture for Python agent systems"
 readme = "README.md"
 requires-python = ">=3.10"

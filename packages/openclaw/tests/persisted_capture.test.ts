@@ -11,6 +11,93 @@ type Handler = (
 ) => unknown;
 
 describe('persisted OpenClaw capture', () => {
+  it('uploads a sealed trace when one hook payload is safely omitted', async () => {
+    const output = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-safe-omission-'),
+    );
+    const handlers: Partial<Record<string, Handler>> = {};
+    const logs: string[] = [];
+    let artifactPath = '';
+    let enqueued = 0;
+    const privateSessionId = 'private-session-value-for-final-scan';
+    try {
+      const plugin = createPluginDefinition(
+        {
+          createRunCapture: createCapture,
+          createUploader: () => ({
+            async enqueueArtifact(path: string) {
+              artifactPath = path;
+              enqueued += 1;
+              return {
+                bundleId: 'bundle',
+                bundleDigest: 'digest',
+                state: 'pending' as const,
+              };
+            },
+            async flush() {
+              return { timedOut: false, uploadedBundles: 0 };
+            },
+            status() {
+              return { lifecycle: 'running', pressure: 'ok' };
+            },
+            async shutdown() {},
+          }),
+        },
+        { terminalGraceMs: 0 },
+      );
+      plugin.register({
+        pluginConfig: {
+          endpoint: 'https://ingest.example.test',
+          ingestKey: 'ingest-secret-value',
+          identityKey: 'identity-secret-value-which-is-long-enough',
+          installationId: 'install_0123456789abcdef0123456789abcdef',
+          serviceName: 'openclaw-safe-omission',
+          outputDirectory: output,
+        },
+        on(name, handler) {
+          handlers[name] = handler as Handler;
+        },
+        logger: {
+          debug(message) { logs.push(String(message)); },
+          info(message) { logs.push(String(message)); },
+          warn(message) { logs.push(String(message)); },
+          error(message) { logs.push(String(message)); },
+        },
+        runtime: { version: '2026.5.5' },
+      });
+      const context = {
+        runId: 'safe-omission-run',
+        sessionId: privateSessionId,
+      };
+      handlers.before_model_resolve!({ prompt: 'hello' }, context);
+      handlers.message_sent!(
+        {
+          runId: context.runId,
+          messageId: privateSessionId,
+          content: 'safe answer',
+        },
+        context,
+      );
+      await handlers.agent_end!(
+        { runId: context.runId, success: true, messages: [] },
+        context,
+      );
+
+      expect(enqueued).toBe(1);
+      expect(artifactPath).not.toBe('');
+      const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
+      expect(trace).not.toContain(privateSessionId);
+      expect(trace).toContain('scrubber_failure_payload_omitted');
+      expect(trace).not.toContain('unsupported_semantic_projection');
+      expect(logs.join('\n')).not.toContain(privateSessionId);
+      await expect(
+        validateArtifact(artifactPath, { secretValues: [privateSessionId] }),
+      ).resolves.toMatchObject({ valid: true, issues: [] });
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
   it.each(['awaiting', 'error'] as const)(
     'retains the sealed source when durable staging returns %s',
     async (outcome) => {

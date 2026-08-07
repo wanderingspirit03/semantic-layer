@@ -62,6 +62,181 @@ async function expectContractRecords(records: unknown[]): Promise<void> {
   }
 }
 
+it('retires model, tool, and lifecycle correlation after a payload omission', () => {
+  const projector = new SemanticProjector();
+  projector.project(capture('root_start', {
+    event_kind: 'lifecycle',
+    phase: 'start',
+    name: 'run',
+    semantic: { type: 'agent.run', name: 'run' },
+  }));
+  projector.project(capture('model_start_1', {
+    event_kind: 'model',
+    phase: 'start',
+    name: 'model',
+    native_identity: 'model_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'model.request', model: 'fixture' },
+  }));
+  projector.retireOmitted(capture('model_end_omitted', {
+    event_kind: 'model',
+    phase: 'end',
+    name: 'model',
+    native_identity: 'model_identity',
+    correlation: { parent_record_id: 'model_start_1' },
+    semantic: { type: 'model.response', status: 'completed' },
+  }));
+  expect(projector.project(capture('model_start_2', {
+    event_kind: 'model',
+    phase: 'start',
+    name: 'model',
+    native_identity: 'model_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'model.request', model: 'fixture' },
+  }))).toEqual([expect.objectContaining({ kind: 'model.request' })]);
+
+  projector.project(capture('tool_start_1', {
+    event_kind: 'tool',
+    phase: 'start',
+    name: 'lookup',
+    native_identity: 'tool_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'tool.execution', name: 'lookup', input: {} },
+  }));
+  projector.retireOmitted(capture('tool_end_omitted', {
+    event_kind: 'tool',
+    phase: 'end',
+    name: 'lookup',
+    native_identity: 'tool_identity',
+    correlation: { parent_record_id: 'tool_start_1' },
+    semantic: { type: 'tool.result', status: 'succeeded', output: null },
+  }));
+  expect(projector.project(capture('tool_start_2', {
+    event_kind: 'tool',
+    phase: 'start',
+    name: 'lookup',
+    native_identity: 'tool_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'tool.execution', name: 'lookup', input: {} },
+  }))).toEqual([expect.objectContaining({ kind: 'tool.call' })]);
+
+  projector.retireOmitted(capture('root_end_omitted', {
+    event_kind: 'lifecycle',
+    phase: 'end',
+    name: 'run',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'agent.run', status: 'succeeded' },
+  }));
+  expect(projector.project(capture('root_start_2', {
+    event_kind: 'lifecycle',
+    phase: 'start',
+    name: 'run two',
+    semantic: { type: 'agent.run', name: 'run two' },
+  }))).toEqual([expect.objectContaining({ kind: 'run.start' })]);
+});
+
+it('keeps ambiguous correlations and retires an omitted proposal transition', () => {
+  const projector = new SemanticProjector();
+  projector.project(capture('root_start', {
+    event_kind: 'lifecycle',
+    phase: 'start',
+    name: 'run',
+    semantic: { type: 'agent.run', name: 'run' },
+  }));
+  for (const identity of ['model_a', 'model_b']) {
+    projector.project(capture(`${identity}_start`, {
+      event_kind: 'model',
+      phase: 'start',
+      name: 'model',
+      native_identity: identity,
+      correlation: { parent_record_id: 'root_start' },
+      semantic: { type: 'model.request', model: 'fixture' },
+    }));
+  }
+  projector.retireOmitted(capture('ambiguous_model_end', {
+    event_kind: 'model',
+    phase: 'end',
+    name: 'model',
+    native_identity: 'model_b',
+    correlation: { parent_record_id: 'model_a_start' },
+    semantic: { type: 'model.response', status: 'completed' },
+  }));
+  for (const identity of ['model_a', 'model_b']) {
+    expect(projector.project(capture(`${identity}_duplicate`, {
+      event_kind: 'model',
+      phase: 'start',
+      name: 'model',
+      native_identity: identity,
+      correlation: { parent_record_id: 'root_start' },
+      semantic: { type: 'model.request', model: 'fixture' },
+    }))).toEqual([
+      expect.objectContaining({
+        kind: 'loss',
+        data: expect.objectContaining({ reason: 'duplicate_active_model_identity' }),
+      }),
+    ]);
+  }
+
+  for (const identity of ['tool_a', 'tool_b']) {
+    projector.project(capture(`${identity}_start`, {
+      event_kind: 'tool',
+      phase: 'start',
+      name: 'lookup',
+      native_identity: identity,
+      correlation: { parent_record_id: 'root_start' },
+      semantic: { type: 'tool.execution', name: 'lookup', input: {} },
+    }));
+  }
+  projector.retireOmitted(capture('ambiguous_tool_end', {
+    event_kind: 'tool',
+    phase: 'end',
+    name: 'lookup',
+    native_identity: 'tool_b',
+    correlation: { parent_record_id: 'tool_a_start' },
+    semantic: { type: 'tool.result', status: 'succeeded', output: null },
+  }));
+  for (const identity of ['tool_a', 'tool_b']) {
+    expect(projector.project(capture(`${identity}_duplicate`, {
+      event_kind: 'tool',
+      phase: 'start',
+      name: 'lookup',
+      native_identity: identity,
+      correlation: { parent_record_id: 'root_start' },
+      semantic: { type: 'tool.execution', name: 'lookup', input: {} },
+    }))).toEqual([
+      expect.objectContaining({
+        kind: 'loss',
+        data: expect.objectContaining({ reason: 'duplicate_active_tool_identity' }),
+      }),
+    ]);
+  }
+
+  projector.project(capture('proposal_start', {
+    event_kind: 'tool',
+    phase: 'start',
+    name: 'proposed',
+    native_identity: 'proposal_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'tool.proposal', name: 'proposed', input: {} },
+  }));
+  projector.retireOmitted(capture('proposal_execution_omitted', {
+    event_kind: 'tool',
+    phase: 'start',
+    name: 'proposed',
+    native_identity: 'proposal_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'tool.execution', name: 'proposed', input: {} },
+  }));
+  expect(projector.project(capture('proposal_reused', {
+    event_kind: 'tool',
+    phase: 'start',
+    name: 'proposed',
+    native_identity: 'proposal_identity',
+    correlation: { parent_record_id: 'root_start' },
+    semantic: { type: 'tool.proposal', name: 'proposed', input: {} },
+  }))).toEqual([expect.objectContaining({ kind: 'tool.proposal' })]);
+});
+
 it('projects multiple agent roots and a nested scope into one contiguous capture-session timeline', async () => {
   const projector = new SemanticProjector();
   const records = [

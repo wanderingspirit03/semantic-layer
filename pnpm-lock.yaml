@@ -39,7 +39,7 @@ importers:
   packages/cloud:
     dependencies:
       semantic-layer-capture:
-        specifier: 0.2.0-beta.0
+        specifier: 0.2.0-beta.1
         version: link:../sdk
     devDependencies:
       '@types/node':
@@ -80,10 +80,10 @@ importers:
   packages/openclaw:
     dependencies:
       semantic-layer-capture:
-        specifier: 0.2.0-beta.0
+        specifier: 0.2.0-beta.1
         version: link:../sdk
       semantic-layer-cloud:
-        specifier: 0.1.0-pilot.2
+        specifier: 0.1.0-pilot.3
         version: link:../cloud
     devDependencies:
       '@types/node':
@@ -108,7 +108,7 @@ importers:
         specifier: ^2.2.3
         version: 2.2.3
       semantic-layer-cloud:
-        specifier: 0.1.0-pilot.2
+        specifier: 0.1.0-pilot.3
         version: link:../cloud
     devDependencies:
       '@types/node':

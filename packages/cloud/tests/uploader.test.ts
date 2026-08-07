@@ -22,6 +22,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createCapture } from 'semantic-layer-capture';
 import { computeBundleDigest, createCloudUploader } from '../src/index.js';
 
 const roots: string[] = [];
@@ -1119,6 +1120,81 @@ describe('semantic-layer-cloud', () => {
     expect(result.nextRetryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
     expect(JSON.stringify(result)).not.toContain('test-ingest-key-123456');
     await uploader.shutdown();
+  });
+
+  it('stages and uploads a sealed bundle containing safe omission evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-omission-'));
+    const privateValue = 'private-final-scan-value';
+    const capture = createCapture({
+      output: join(root, 'traces'),
+      serviceName: 'cloud-safe-omission',
+      secretValues: [privateValue],
+    });
+    capture.installSource({
+      metadata: {
+        name: 'fixture:safe-omission',
+        seam: 'fixture.callback',
+        identityDomain: 'fixture.operation',
+        coverage: [],
+      },
+      install(sink) {
+        const opened = sink.openTrace({
+          name: 'safe-root',
+          semantic: { type: 'agent.run', name: 'safe-root' },
+        });
+        if (!opened.accepted) throw new Error(opened.reason);
+        sink.record({
+          kind: 'state',
+          phase: 'event',
+          name: 'omitted-state',
+          trace: opened.identity,
+          parentRecordId: opened.recordId,
+          nativeIdentity: privateValue,
+          native: null,
+          semantic: { type: 'state.omitted', value: true },
+        });
+        sink.record({
+          kind: 'lifecycle',
+          phase: 'end',
+          name: 'safe-root',
+          trace: opened.identity,
+          parentRecordId: opened.recordId,
+          native: null,
+          semantic: { type: 'agent.run', status: 'succeeded' },
+        });
+        return { deactivate() {}, drain() {} };
+      },
+    });
+    const sealed = await capture.shutdown();
+    const requests: Array<{
+      method: string;
+      url: string;
+      body: Buffer;
+      headers: IncomingMessage['headers'];
+    }> = [];
+    const endpoint = await listen((request, response) =>
+      collect(request, response, requests));
+    const uploader = createCloudUploader({
+      endpoint,
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+    });
+    try {
+      await expect(uploader.enqueueArtifact(sealed.artifactPath)).resolves.toMatchObject({
+        state: 'pending',
+      });
+      await expect(uploader.flush({ deadlineMs: 5_000 })).resolves.toMatchObject({
+        pendingBundles: 0,
+        uploadedBundles: 1,
+      });
+      const uploaded = Buffer.concat(requests.map((request) => request.body));
+      expect(uploaded.includes(privateValue)).toBe(false);
+      expect(uploaded.includes('scrubber_failure_payload_omitted')).toBe(true);
+      expect(requests.at(-1)?.url).toMatch(/\/complete$/u);
+    } finally {
+      await uploader.shutdown();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
