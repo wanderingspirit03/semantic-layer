@@ -656,7 +656,7 @@ describe('runtime production guarantees', () => {
     },
   );
 
-  it('rolls back blobs staged for a source root rejected by the final secret scan', async () => {
+  it('seals a safe omission when the final secret scan blocks a source record', async () => {
     const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-blob-rollback-'));
     const secret = 'native-identity-secret';
     const capture = initialize({
@@ -664,7 +664,7 @@ describe('runtime production guarantees', () => {
       serviceName: 'runtime-blob-rollback',
       secretValues: [secret],
     });
-    let opened: ReturnType<SourceSink['openTrace']> | undefined;
+    let omitted: ReturnType<SourceSink['record']> | undefined;
     capture.installSource({
       metadata: {
         name: 'fixture:blob-rollback',
@@ -673,29 +673,168 @@ describe('runtime production guarantees', () => {
         coverage: [],
       },
       install(sink) {
-        opened = sink.openTrace({
-          name: 'rejected-root',
+        const root = sink.openTrace({
+          name: 'safe-root',
+          semantic: { type: 'agent.run', name: 'safe-root' },
+        });
+        if (!root.accepted) throw new Error(root.reason);
+        omitted = sink.record({
+          kind: 'state',
+          phase: 'event',
+          name: 'omitted-event',
+          trace: root.identity,
+          parentRecordId: root.recordId,
           nativeIdentity: secret,
           native: { body: new Uint8Array([1, 2, 3]) },
-          semantic: { type: 'agent.run', name: 'rejected-root' },
+          semantic: { type: 'state.omitted', value: true },
+        });
+        sink.record({
+          kind: 'lifecycle',
+          phase: 'end',
+          name: 'safe-root',
+          trace: root.identity,
+          parentRecordId: root.recordId,
+          native: null,
+          semantic: { type: 'agent.run', status: 'succeeded' },
         });
         return { deactivate() {}, drain() {} };
       },
     });
-    expect(opened).toMatchObject({
+    expect(omitted).toMatchObject({
       accepted: false,
-      reason: 'final_secret_scan_blocked',
+      reason: 'payload_omitted',
     });
-    await opened!.settled;
+    await omitted!.settled;
+    await capture.flush();
     expect(capture.status().queue.pendingBytes).toBe(0);
 
     const closed = await capture.shutdown();
+    expect(closed).toMatchObject({
+      state: 'closed',
+      rejected: 0,
+      lastError: null,
+      losses: { scrubber_failure_payload_omitted: 1 },
+    });
     await expect(stat(join(closed.artifactPath, 'blobs'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    expect((await traceRows(closed.artifactPath)).some((row) => (
-      row.kind === 'run.start' && row.data.name === 'rejected-root'
-    ))).toBe(false);
+    const traceText = await readFile(join(closed.artifactPath, 'trace.jsonl'), 'utf8');
+    const rows = await traceRows(closed.artifactPath);
+    expect(traceText).not.toContain(secret);
+    expect(rows.filter((row) => row.kind === 'loss')).toEqual([
+      expect.objectContaining({
+        kind: 'loss',
+        data: {
+          reason: 'scrubber_failure_payload_omitted',
+          stage: 'scrub',
+          count: 1,
+          recoverable: true,
+          path: '/native_identity',
+        },
+      }),
+    ]);
+    await expect(validateArtifact(closed.artifactPath, { secretValues: [secret] }))
+      .resolves.toMatchObject({ valid: true, issues: [] });
+  });
+
+  it('does not issue a trace identity when a source root is safely omitted', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-root-omission-'));
+    const secret = 'root-native-identity-secret';
+    const capture = initialize({
+      output,
+      serviceName: 'runtime-root-omission',
+      secretValues: [secret],
+    });
+    let opened: ReturnType<SourceSink['openTrace']> | undefined;
+    capture.installSource({
+      metadata: {
+        name: 'fixture:root-omission',
+        seam: 'fixture.open',
+        identityDomain: 'fixture.operation',
+        coverage: [],
+      },
+      install(sink) {
+        opened = sink.openTrace({
+          name: 'omitted-root',
+          nativeIdentity: secret,
+          native: { body: new Uint8Array([1, 2, 3]) },
+          semantic: { type: 'agent.run', name: 'omitted-root' },
+        });
+        return { deactivate() {}, drain() {} };
+      },
+    });
+
+    expect(opened).toMatchObject({
+      accepted: false,
+      reason: 'payload_omitted',
+    });
+    expect(opened).not.toHaveProperty('identity');
+    await opened!.settled;
+    const closed = await capture.shutdown();
+    expect(closed).toMatchObject({
+      state: 'closed',
+      rejected: 0,
+      losses: { scrubber_failure_payload_omitted: 1 },
+    });
+    const rows = await traceRows(closed.artifactPath);
+    expect(rows.some((row) => row.kind === 'run.start')).toBe(false);
+    await expect(stat(join(closed.artifactPath, 'blobs'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(validateArtifact(closed.artifactPath, { secretValues: [secret] }))
+      .resolves.toMatchObject({ valid: true, issues: [] });
+  });
+
+  it('rejects an unsafe omission fallback once without recursion or secret persistence', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-unsafe-fallback-'));
+    const secret = 'semantic_layer.loss';
+    const capture = initialize({
+      output,
+      serviceName: 'runtime-unsafe-fallback',
+      secretValues: [secret],
+    });
+    let omitted: ReturnType<SourceSink['record']> | undefined;
+    capture.installSource({
+      metadata: {
+        name: 'fixture:unsafe-fallback',
+        seam: 'fixture.open',
+        identityDomain: 'fixture.operation',
+        coverage: [],
+      },
+      install(sink) {
+        const root = sink.openTrace({
+          name: 'safe-root',
+          semantic: { type: 'agent.run', name: 'safe-root' },
+        });
+        if (!root.accepted) throw new Error(root.reason);
+        omitted = sink.record({
+          kind: 'state',
+          phase: 'event',
+          name: 'omitted-event',
+          trace: root.identity,
+          parentRecordId: root.recordId,
+          nativeIdentity: secret,
+          native: null,
+          semantic: { type: 'state.omitted', value: true },
+        });
+        return { deactivate() {}, drain() {} };
+      },
+    });
+
+    expect(omitted).toMatchObject({
+      accepted: false,
+      reason: 'fallback_failed',
+    });
+    await omitted!.settled;
+    const closed = await capture.shutdown();
+    expect(closed).toMatchObject({
+      state: 'closed',
+      rejected: 1,
+      lastError: null,
+      losses: {},
+    });
+    const traceText = await readFile(join(closed.artifactPath, 'trace.jsonl'), 'utf8');
+    expect(traceText).not.toContain(secret);
   });
 
   it('quarantines an abandoned writer and records crash and uncertain-tail losses once', async () => {

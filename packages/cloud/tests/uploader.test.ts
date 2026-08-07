@@ -12,6 +12,7 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   writeFile,
@@ -20,7 +21,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createCapture } from 'semantic-layer-capture';
 import { computeBundleDigest, createCloudUploader } from '../src/index.js';
 
 const roots: string[] = [];
@@ -534,7 +536,7 @@ describe('semantic-layer-cloud', () => {
     await uploader.shutdown();
   });
 
-  it('uploads the exact sealed bundle bytes and leaves the receipt outside it', async () => {
+  it('uploads the exact sealed bundle bytes and retains only its acknowledgement receipt', async () => {
     const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-'));
     roots.push(root);
     const artifact = await copyExample(root);
@@ -603,10 +605,8 @@ describe('semantic-layer-cloud', () => {
     const acked = await readdir(join(root, 'spool', 'acked'));
     expect(acked).toEqual([queued.bundleDigest]);
     expect(
-      await readdir(
-        join(root, 'spool', 'acked', queued.bundleDigest, 'bundle'),
-      ),
-    ).toEqual(['manifest.json', 'trace.jsonl']);
+      await readdir(join(root, 'spool', 'acked', queued.bundleDigest)),
+    ).toEqual(['receipt.json']);
     expect(
       JSON.parse(
         await readFile(
@@ -620,24 +620,6 @@ describe('semantic-layer-cloud', () => {
     });
     expect((await stat(join(root, 'spool'))).mode & 0o777).toBe(0o700);
     expect(
-      (await stat(join(root, 'spool', 'acked', queued.bundleDigest, 'bundle')))
-        .mode & 0o777,
-    ).toBe(0o700);
-    expect(
-      (
-        await stat(
-          join(
-            root,
-            'spool',
-            'acked',
-            queued.bundleDigest,
-            'bundle',
-            'manifest.json',
-          ),
-        )
-      ).mode & 0o777,
-    ).toBe(0o600);
-    expect(
       (
         await stat(
           join(root, 'spool', 'acked', queued.bundleDigest, 'receipt.json'),
@@ -647,7 +629,57 @@ describe('semantic-layer-cloud', () => {
     await uploader.shutdown();
   });
 
-  it('does not automatically delete acknowledged bundles', async () => {
+  it('removes an admitted source only when its owner transfers cleanup to the uploader', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-source-'));
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+
+    const queued = await uploader.enqueueArtifact(artifact, {
+      removeSourceAfterAdmissionFrom: root,
+    });
+
+    expect(queued.state).toBe('pending');
+    await expect(stat(artifact)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(
+      await stat(
+        join(root, 'spool', 'pending', queued.bundleDigest, 'bundle'),
+      ),
+    ).toBeDefined();
+    await uploader.shutdown();
+  });
+
+  it('retains a source when a cleanup root does not own that direct child', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-source-'));
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const unrelatedRoot = join(root, 'unrelated');
+    await mkdir(unrelatedRoot);
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+
+    await uploader.enqueueArtifact(artifact, {
+      removeSourceAfterAdmissionFrom: unrelatedRoot,
+    });
+
+    expect((await stat(artifact)).isDirectory()).toBe(true);
+    await uploader.shutdown();
+  });
+
+  it('compacts a legacy acknowledged bundle after restart', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'semantic-layer-cloud-acked-retention-'),
     );
@@ -681,6 +713,11 @@ describe('semantic-layer-cloud', () => {
     await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, {
       mode: 0o600,
     });
+    await cp(
+      artifact,
+      join(spoolDirectory, 'acked', queued.bundleDigest, 'bundle'),
+      { recursive: true },
+    );
     await uploader.shutdown();
 
     const restarted = createCloudUploader({
@@ -693,7 +730,125 @@ describe('semantic-layer-cloud', () => {
     expect(await readdir(join(spoolDirectory, 'acked'))).toEqual([
       queued.bundleDigest,
     ]);
+    expect(
+      await readdir(join(spoolDirectory, 'acked', queued.bundleDigest)),
+    ).toEqual(['receipt.json']);
     await restarted.shutdown();
+  });
+
+  it('preserves an acknowledged bundle when its receipt is not valid', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-invalid-acked-receipt-'),
+    );
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const spoolDirectory = join(root, 'spool');
+    const seed = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+      fetch: async () => {
+        throw new Error('offline');
+      },
+    });
+    const queued = await seed.enqueueArtifact(artifact);
+    await seed.shutdown();
+    const digest = queued.bundleDigest;
+    const acknowledged = join(spoolDirectory, 'acked', digest);
+    await rename(join(spoolDirectory, 'pending', digest), acknowledged);
+    await writeFile(
+      join(acknowledged, 'receipt.json'),
+      `${JSON.stringify({
+        status: 'acknowledged',
+        bundle_id: 'wrong_bundle_id',
+        bundle_digest: digest,
+        acknowledged_at: new Date().toISOString(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+    });
+    await uploader.flush({ deadlineMs: 0 });
+
+    expect(await readdir(acknowledged)).toEqual(['bundle', 'receipt.json']);
+    expect(uploader.status().ackedBundles).toBe(0);
+    await uploader.shutdown();
+  });
+
+  it('rejects a matching pending directory when its bundle bytes were changed', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-invalid-pending-'),
+    );
+    roots.push(root);
+    const artifact = await copyExample(root);
+    const spoolDirectory = join(root, 'spool');
+    const originalKey = process.env.SEMANTIC_LAYER_INGEST_KEY;
+    delete process.env.SEMANTIC_LAYER_INGEST_KEY;
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      spoolDirectory,
+    });
+    try {
+      const queued = await uploader.enqueueArtifact(artifact);
+      await writeFile(
+        join(
+          spoolDirectory,
+          'pending',
+          queued.bundleDigest,
+          'bundle',
+          'trace.jsonl',
+        ),
+        '{"changed":true}\n',
+        { mode: 0o600 },
+      );
+
+      await expect(uploader.enqueueArtifact(artifact)).rejects.toMatchObject({
+        code: 'PENDING_STATE_INVALID',
+      });
+    } finally {
+      await uploader.shutdown();
+      if (originalKey === undefined)
+        delete process.env.SEMANTIC_LAYER_INGEST_KEY;
+      else process.env.SEMANTIC_LAYER_INGEST_KEY = originalKey;
+    }
+  });
+
+  it('uses a valid acknowledgement receipt without another network request', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-acked-dedup-'),
+    );
+    roots.push(root);
+    const artifact = await copyExample(root);
+    let requests = 0;
+    const endpoint = await listen((request, response) => {
+      requests += 1;
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () =>
+        respondSuccess(request, response, Buffer.concat(chunks)),
+      );
+    });
+    const spoolDirectory = join(root, 'spool');
+    const uploader = createCloudUploader({
+      endpoint,
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory,
+    });
+    const queued = await uploader.enqueueArtifact(artifact);
+    await uploader.flush({ deadlineMs: 5_000 });
+    const completedRequests = requests;
+
+    await expect(uploader.enqueueArtifact(artifact)).resolves.toMatchObject({
+      bundleId: queued.bundleId,
+      bundleDigest: queued.bundleDigest,
+      state: 'acked',
+    });
+    expect(requests).toBe(completedRequests);
+    await uploader.shutdown();
   });
 
   it('keeps an outage pending and resumes it after process restart', async () => {
@@ -953,22 +1108,108 @@ describe('semantic-layer-cloud', () => {
       join(tmpdir(), 'semantic-layer-cloud-quota-status-'),
     );
     const artifact = await copyExample(root);
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.99);
     const uploader = createCloudUploader({
       endpoint: 'https://ingest.invalid',
       ingestKey: 'test-ingest-key-123456',
       spoolDirectory: join(root, 'spool'),
       fetch: async () => new Response(null, { status: 429 }),
     });
-    await uploader.enqueueArtifact(artifact);
+    try {
+      await uploader.enqueueArtifact(artifact);
+      await vi.waitFor(
+        () => {
+          const status = uploader.status();
+          expect(status.pendingBundles).toBe(1);
+          expect(status.quotaLimited).toBe(true);
+          expect(status.retryingBundles).toBe(1);
+          expect(status.nextRetryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+        },
+        { timeout: 5_000 },
+      );
 
-    const result = await uploader.flush({ deadlineMs: 100 });
+      expect(JSON.stringify(uploader.status())).not.toContain(
+        'test-ingest-key-123456',
+      );
+    } finally {
+      random.mockRestore();
+      await uploader.shutdown();
+    }
+  });
 
-    expect(result.pendingBundles).toBe(1);
-    expect(result.quotaLimited).toBe(true);
-    expect(result.retryingBundles).toBe(1);
-    expect(result.nextRetryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
-    expect(JSON.stringify(result)).not.toContain('test-ingest-key-123456');
-    await uploader.shutdown();
+  it('stages and uploads a sealed bundle containing safe omission evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'semantic-layer-cloud-omission-'));
+    const privateValue = 'private-final-scan-value';
+    const capture = createCapture({
+      output: join(root, 'traces'),
+      serviceName: 'cloud-safe-omission',
+      secretValues: [privateValue],
+    });
+    capture.installSource({
+      metadata: {
+        name: 'fixture:safe-omission',
+        seam: 'fixture.callback',
+        identityDomain: 'fixture.operation',
+        coverage: [],
+      },
+      install(sink) {
+        const opened = sink.openTrace({
+          name: 'safe-root',
+          semantic: { type: 'agent.run', name: 'safe-root' },
+        });
+        if (!opened.accepted) throw new Error(opened.reason);
+        sink.record({
+          kind: 'state',
+          phase: 'event',
+          name: 'omitted-state',
+          trace: opened.identity,
+          parentRecordId: opened.recordId,
+          nativeIdentity: privateValue,
+          native: null,
+          semantic: { type: 'state.omitted', value: true },
+        });
+        sink.record({
+          kind: 'lifecycle',
+          phase: 'end',
+          name: 'safe-root',
+          trace: opened.identity,
+          parentRecordId: opened.recordId,
+          native: null,
+          semantic: { type: 'agent.run', status: 'succeeded' },
+        });
+        return { deactivate() {}, drain() {} };
+      },
+    });
+    const sealed = await capture.shutdown();
+    const requests: Array<{
+      method: string;
+      url: string;
+      body: Buffer;
+      headers: IncomingMessage['headers'];
+    }> = [];
+    const endpoint = await listen((request, response) =>
+      collect(request, response, requests));
+    const uploader = createCloudUploader({
+      endpoint,
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+    });
+    try {
+      await expect(uploader.enqueueArtifact(sealed.artifactPath)).resolves.toMatchObject({
+        state: 'pending',
+      });
+      await expect(uploader.flush({ deadlineMs: 5_000 })).resolves.toMatchObject({
+        pendingBundles: 0,
+        uploadedBundles: 1,
+      });
+      const uploaded = Buffer.concat(requests.map((request) => request.body));
+      expect(uploaded.includes(privateValue)).toBe(false);
+      expect(uploaded.includes('scrubber_failure_payload_omitted')).toBe(true);
+      expect(requests.at(-1)?.url).toMatch(/\/complete$/u);
+    } finally {
+      await uploader.shutdown();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

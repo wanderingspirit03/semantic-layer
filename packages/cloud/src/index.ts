@@ -57,6 +57,10 @@ export type EnqueueReceipt = {
   state: 'pending' | 'acked' | 'awaiting_spool_admission';
 };
 
+export type EnqueueOptions = {
+  removeSourceAfterAdmissionFrom?: string;
+};
+
 export type UploadFailure = {
   bundleDigest: string;
   code: string;
@@ -103,7 +107,10 @@ export type FlushResult = CloudUploaderStatus & {
 };
 
 export interface CloudUploader {
-  enqueueArtifact(sealedArtifactPath: string): Promise<EnqueueReceipt>;
+  enqueueArtifact(
+    sealedArtifactPath: string,
+    options?: EnqueueOptions,
+  ): Promise<EnqueueReceipt>;
   flush(options: FlushOptions): Promise<FlushResult>;
   status(): CloudUploaderStatus;
   shutdown(): Promise<void>;
@@ -319,9 +326,12 @@ class SharedCloudUploaderLease implements CloudUploader {
     private readonly registry: Map<string, SharedUploaderEntry>,
   ) {}
 
-  enqueueArtifact(sealedArtifactPath: string): Promise<EnqueueReceipt> {
+  enqueueArtifact(
+    sealedArtifactPath: string,
+    options?: EnqueueOptions,
+  ): Promise<EnqueueReceipt> {
     this.assertRunning();
-    return this.entry.core.enqueueArtifact(sealedArtifactPath);
+    return this.entry.core.enqueueArtifact(sealedArtifactPath, options);
   }
 
   flush(options: FlushOptions): Promise<FlushResult> {
@@ -427,12 +437,34 @@ class DurableCloudUploader implements CloudUploader {
     return this.terminated ?? Promise.resolve();
   }
 
-  async enqueueArtifact(sealedArtifactPath: string): Promise<EnqueueReceipt> {
+  async enqueueArtifact(
+    sealedArtifactPath: string,
+    options?: EnqueueOptions,
+  ): Promise<EnqueueReceipt> {
     await this.ready;
     this.assertRunning();
-    const admitted = this.admission.then(() =>
-      this.enqueueArtifactOwned(sealedArtifactPath),
-    );
+    const admitted = this.admission.then(async () => {
+      const receipt = await this.enqueueArtifactOwned(sealedArtifactPath);
+      if (
+        options?.removeSourceAfterAdmissionFrom &&
+        receipt.state !== 'awaiting_spool_admission'
+      ) {
+        try {
+          await removeDirectArtifactChild(
+            sealedArtifactPath,
+            options.removeSourceAfterAdmissionFrom,
+          );
+        } catch (error) {
+          await this.recordFailure(
+            receipt.bundleDigest,
+            'SOURCE_CLEANUP_FAILED',
+            error instanceof Error ? error.message : String(error),
+          );
+          await this.refreshStatus();
+        }
+      }
+      return receipt;
+    });
     this.admission = admitted.then(
       () => undefined,
       () => undefined,
@@ -483,6 +515,12 @@ class DurableCloudUploader implements CloudUploader {
 
     const acked = join(this.spool, 'acked', inventory.bundleDigest);
     if (await exists(acked)) {
+      if (!(await this.acknowledgementMatches(acked, inventory))) {
+        throw new CloudUploaderError(
+          'ACK_STATE_INVALID',
+          'acknowledged spool state does not contain the expected receipt',
+        );
+      }
       return {
         bundleId: inventory.bundleId,
         bundleDigest: inventory.bundleDigest,
@@ -536,6 +574,12 @@ class DurableCloudUploader implements CloudUploader {
     }
     const pending = join(this.spool, 'pending', inventory.bundleDigest);
     if (await exists(pending)) {
+      if (!(await this.pendingBundleMatches(pending, inventory))) {
+        throw new CloudUploaderError(
+          'PENDING_STATE_INVALID',
+          'pending spool state does not contain the expected bundle bytes',
+        );
+      }
       return {
         bundleId: inventory.bundleId,
         bundleDigest: inventory.bundleDigest,
@@ -1022,6 +1066,7 @@ class DurableCloudUploader implements CloudUploader {
         this.recoverExternalStateTemps('quarantine'),
       ]);
       await this.recoverStaging();
+      await this.compactAcknowledgedBundles();
       await this.admitWaitingArtifacts();
       await this.refreshStatus();
       this.scheduleProcessing(0);
@@ -1245,6 +1290,85 @@ class DurableCloudUploader implements CloudUploader {
     await syncDirectory(destinationRoot);
   }
 
+  private async compactAcknowledgedBundles(): Promise<void> {
+    const root = join(this.spool, 'acked');
+    const entries = await readdir(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const item = join(root, entry.name);
+      let receipt: unknown;
+      try {
+        receipt = JSON.parse(await readFile(join(item, 'receipt.json'), 'utf8'));
+      } catch {
+        continue;
+      }
+      if (
+        !isRecord(receipt) ||
+        receipt.status !== 'acknowledged' ||
+        receipt.bundle_digest !== entry.name ||
+        typeof receipt.bundle_id !== 'string' ||
+        typeof receipt.acknowledged_at !== 'string'
+      ) {
+        continue;
+      }
+      try {
+        const bundle = join(item, 'bundle');
+        if (!(await exists(bundle))) continue;
+        const inventory = await inventoryBundle(bundle);
+        if (
+          receipt.bundle_id !== inventory.bundleId ||
+          receipt.bundle_digest !== inventory.bundleDigest
+        ) {
+          continue;
+        }
+        await rm(join(item, 'bundle'), { recursive: true, force: true });
+        await syncDirectory(item);
+      } catch (error) {
+        await this.recordFailure(
+          entry.name,
+          'ACK_COMPACTION_FAILED',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+  }
+
+  private async acknowledgementMatches(
+    item: string,
+    inventory: BundleInventory,
+  ): Promise<boolean> {
+    try {
+      const receipt = JSON.parse(
+        await readFile(join(item, 'receipt.json'), 'utf8'),
+      ) as unknown;
+      return (
+        isRecord(receipt) &&
+        receipt.status === 'acknowledged' &&
+        receipt.bundle_id === inventory.bundleId &&
+        receipt.bundle_digest === inventory.bundleDigest &&
+        typeof receipt.acknowledged_at === 'string'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async pendingBundleMatches(
+    item: string,
+    inventory: BundleInventory,
+  ): Promise<boolean> {
+    try {
+      const pending = await inventoryBundle(join(item, 'bundle'));
+      return (
+        pending.bundleId === inventory.bundleId &&
+        pending.bundleDigest === inventory.bundleDigest &&
+        pending.bytes === inventory.bytes
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private bootstrapStatusSynchronously(): void {
     for (const name of [
       'pending',
@@ -1269,7 +1393,7 @@ class DurableCloudUploader implements CloudUploader {
       // Async initialization uses the same safe missing/corrupt-state fallback.
     }
     const pending = describeItemsSync(join(this.spool, 'pending'));
-    const acked = describeItemsSync(join(this.spool, 'acked'));
+    const acked = describeAcknowledgedItemsSync(join(this.spool, 'acked'));
     const blocked = describeRetainedItemsSync(
       join(this.spool, 'upload_blocked'),
     );
@@ -1393,6 +1517,7 @@ class DurableCloudUploader implements CloudUploader {
     const item = join(this.spool, 'pending', bundleDigest);
     const bundle = join(item, 'bundle');
     let inventory: BundleInventory;
+    let acknowledgedAt: string;
     try {
       inventory = await inventoryBundle(bundle);
       if (inventory.bundleDigest !== bundleDigest) {
@@ -1475,7 +1600,7 @@ class DurableCloudUploader implements CloudUploader {
           'ingest completion response did not acknowledge the expected bundle digest',
         );
       }
-      const acknowledgedAt = new Date().toISOString();
+      acknowledgedAt = new Date().toISOString();
       await writeOwnerJson(join(item, 'receipt.json'), {
         protocol_version: INGEST_PROTOCOL_VERSION,
         bundle_id: inventory.bundleId,
@@ -1483,15 +1608,6 @@ class DurableCloudUploader implements CloudUploader {
         status: 'acknowledged',
         acknowledged_at: acknowledgedAt,
       });
-      await rename(item, join(this.spool, 'acked', bundleDigest));
-      this.retryAt.delete(bundleDigest);
-      this.attempts.delete(bundleDigest);
-      this.persisted.lastAcknowledgedAt = acknowledgedAt;
-      await this.clearFailure(bundleDigest);
-      await writeOwnerJson(
-        join(this.spool, 'status', 'state.json'),
-        this.persisted,
-      );
     } catch (error) {
       const failure = classifyFailure(error);
       if (failure.kind === 'auth') {
@@ -1519,6 +1635,45 @@ class DurableCloudUploader implements CloudUploader {
           attempts,
         );
       }
+      return;
+    }
+
+    const acknowledgedItem = join(this.spool, 'acked', bundleDigest);
+    try {
+      await rename(item, acknowledgedItem);
+      await Promise.all([
+        syncDirectory(join(this.spool, 'pending')),
+        syncDirectory(join(this.spool, 'acked')),
+      ]);
+      this.retryAt.delete(bundleDigest);
+      this.attempts.delete(bundleDigest);
+      this.persisted.lastAcknowledgedAt = acknowledgedAt;
+      await this.clearFailure(bundleDigest);
+      await writeOwnerJson(
+        join(this.spool, 'status', 'state.json'),
+        this.persisted,
+      );
+    } catch (error) {
+      await this.recordFailure(
+        bundleDigest,
+        'ACK_STATE_COMMIT_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+
+    try {
+      await rm(join(acknowledgedItem, 'bundle'), {
+        recursive: true,
+        force: true,
+      });
+      await syncDirectory(acknowledgedItem);
+    } catch (error) {
+      await this.recordFailure(
+        bundleDigest,
+        'ACK_COMPACTION_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
@@ -1683,7 +1838,7 @@ class DurableCloudUploader implements CloudUploader {
     const [pending, acked, blocked, awaiting, quarantine, reservedBytes] =
       await Promise.all([
         describeItems(join(this.spool, 'pending')),
-        describeItems(join(this.spool, 'acked')),
+        describeAcknowledgedItems(join(this.spool, 'acked')),
         describeRetainedItems(join(this.spool, 'upload_blocked')),
         describeExternalItems(join(this.spool, 'awaiting_spool_admission')),
         describeRetainedItems(join(this.spool, 'quarantine')),
@@ -2366,6 +2521,40 @@ async function describeItems(root: string): Promise<{
   return { count: names.length, bytes, oldest };
 }
 
+async function describeAcknowledgedItems(root: string): Promise<{
+  count: number;
+  bytes: number;
+  oldest: { name: string; time: number } | null;
+}> {
+  const described = await describeItems(root);
+  let count = 0;
+  for (const name of await listDirectories(root)) {
+    try {
+      const item = join(root, name);
+      const receipt = JSON.parse(
+        await readFile(join(item, 'receipt.json'), 'utf8'),
+      ) as unknown;
+      let valid =
+        isRecord(receipt) &&
+        receipt.status === 'acknowledged' &&
+        receipt.bundle_digest === name &&
+        typeof receipt.bundle_id === 'string' &&
+        typeof receipt.acknowledged_at === 'string';
+      const bundle = join(item, 'bundle');
+      if (valid && isRecord(receipt) && (await exists(bundle))) {
+        const inventory = await inventoryBundle(bundle);
+        valid =
+          receipt.bundle_id === inventory.bundleId &&
+          receipt.bundle_digest === inventory.bundleDigest;
+      }
+      if (valid) count += 1;
+    } catch {
+      // Invalid acknowledgement directories still consume spool bytes.
+    }
+  }
+  return { ...described, count };
+}
+
 function describeItemsSync(root: string): {
   count: number;
   bytes: number;
@@ -2395,6 +2584,51 @@ function describeItemsSync(root: string): {
     if (!oldest || time < oldest.time) oldest = { name, time };
   }
   return { count: names.length, bytes, oldest };
+}
+
+function describeAcknowledgedItemsSync(root: string): {
+  count: number;
+  bytes: number;
+  oldest: { name: string; time: number } | null;
+} {
+  const described = describeItemsSync(root);
+  let count = 0;
+  let names: string[] = [];
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          !entry.name.startsWith('.'),
+      )
+      .map((entry) => entry.name);
+  } catch {
+    // The async initializer creates the directory and refreshes status.
+  }
+  for (const name of names) {
+    try {
+      const receipt = JSON.parse(
+        readFileSync(join(root, name, 'receipt.json'), 'utf8'),
+      ) as unknown;
+      if (
+        isRecord(receipt) &&
+        receipt.status === 'acknowledged' &&
+        receipt.bundle_digest === name &&
+        typeof receipt.bundle_id === 'string' &&
+        typeof receipt.acknowledged_at === 'string'
+      ) {
+        try {
+          lstatSync(join(root, name, 'bundle'));
+        } catch {
+          count += 1;
+        }
+      }
+    } catch {
+      // Invalid acknowledgement directories still consume spool bytes.
+    }
+  }
+  return { ...described, count };
 }
 
 async function describeRetainedItems(root: string): Promise<{
@@ -2633,6 +2867,22 @@ async function syncDirectory(path: string): Promise<void> {
   } finally {
     await handle?.close();
   }
+}
+
+async function removeDirectArtifactChild(
+  artifactPath: string,
+  outputDirectory: string,
+): Promise<void> {
+  const metadata = await lstat(artifactPath);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new Error('sealed capture path is not a regular directory');
+  const [outputRoot, artifact] = await Promise.all([
+    realpath(resolve(outputDirectory)),
+    realpath(resolve(artifactPath)),
+  ]);
+  if (dirname(artifact) !== outputRoot)
+    throw new Error('sealed capture path is outside the capture output root');
+  await rm(artifact, { recursive: true, force: true });
 }
 
 async function exists(path: string): Promise<boolean> {

@@ -91,7 +91,7 @@ async function packPublicPackage({ name, directory, version, bin }, packDir, unp
   }
   if (bin) {
     const expectedBin = bin === 'semantic-layer-cloud'
-      ? './dist/cli.js'
+      ? 'dist/cli.js'
       : 'dist/bin.js';
     assert.equal(manifest.bin?.[bin], expectedBin);
     const binPath = join(packedRoot, manifest.bin[bin]);
@@ -117,23 +117,23 @@ try {
     {
       name: 'semantic-layer-capture',
       directory: 'packages/sdk',
-      version: '0.2.0-beta.0',
+      version: '0.2.0-beta.1',
     },
     {
       name: 'semantic-layer-cloud',
       directory: 'packages/cloud',
-      version: '0.1.0-pilot.1',
+      version: '0.1.0-pilot.3',
       bin: 'semantic-layer-cloud',
     },
     {
       name: 'semantic-layer-openclaw',
       directory: 'packages/openclaw',
-      version: '0.1.0-pilot.1',
+      version: '0.1.0-pilot.4',
     },
     {
       name: 'semantic-layer-openclaw-setup',
       directory: 'packages/openclaw-setup',
-      version: '0.1.0-pilot.2',
+      version: '0.1.0-pilot.8',
       bin: 'semantic-layer-openclaw-setup',
     },
   ];

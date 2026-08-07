@@ -141,6 +141,19 @@ Missing evidence is not always a loss. For example, a provider that exposes no
 reasoning gives the SDK no evidence that reasoning existed. The adapter should
 omit the field without making a claim about hidden data.
 
+The final credential scan can block a complete encoded record even after its
+normal fields were scrubbed. The runtime then discards that record and any
+staged blobs. It stores one safe `scrubber_failure_payload_omitted` loss with a
+top level path and count. The blocked value is never stored or logged. A safe
+omission does not reject the trace. The trace can still close, validate, and be
+uploaded. If the safe loss itself cannot be stored, normal capture failure
+rules apply.
+
+If the blocked record ends a run, model call, or tool call, the runtime also
+removes that item from its active in memory correlation state. It does not keep
+the blocked content. A later event cannot be linked to the omitted payload, and
+the same native identity can be used by a later operation.
+
 ## Duplicate evidence
 
 Frameworks can report one fact through several official hooks. An adapter may

@@ -96,6 +96,146 @@ class SemanticProjector:
         self._correlation_history: dict[str, None] = {}
         self._composed_outputs: dict[str, _ComposedOutput] = {}
 
+    def retire_omitted(self, capture: Mapping[str, Any]) -> None:
+        """Retire active state completed by a blocked terminal row."""
+        semantic_value = capture.get("semantic")
+        semantic = semantic_value if isinstance(semantic_value, Mapping) else {}
+        event_kind = capture.get("event_kind")
+        phase = capture.get("phase")
+        semantic_type = semantic.get("type")
+        source_parent = self._source_parent(capture)
+
+        if event_kind == "lifecycle" and phase in {"end", "error", "cancelled"}:
+            trace_id = self._trace_id(capture)
+            root = self._roots.get(trace_id)
+            if source_parent is not None and root is not None and root[0] == source_parent:
+                self._roots.pop(trace_id, None)
+                self._composed_outputs.pop(trace_id, None)
+            if source_parent is not None:
+                self._scopes.pop(source_parent, None)
+
+        if event_kind == "model" and semantic_type == "model.response":
+            parent_request = (
+                self._model_requests_by_record.get(source_parent)
+                if source_parent is not None
+                else None
+            )
+            native_request = None
+            identity = capture.get("native_identity")
+            if isinstance(identity, str) and identity:
+                native_request = self._model_requests_by_identity.get(
+                    (
+                        self._trace_id(capture),
+                        self._source_id(capture.get("source")),
+                        identity,
+                    )
+                )
+            source_parent_meta = (
+                self._record_meta.get(source_parent)
+                if source_parent is not None
+                else None
+            )
+            declared_parent = (
+                source_parent_meta is not None
+                and source_parent_meta[0] == "model.request"
+            )
+            if (
+                not (declared_parent and parent_request is None)
+                and (
+                    parent_request is None
+                    or native_request is None
+                    or parent_request.record == native_request.record
+                )
+            ):
+                request = parent_request or native_request
+            else:
+                request = None
+            if request is not None:
+                self._drop_model_request(request)
+
+        if event_kind == "tool" and semantic_type in {"tool.result", "tool.error"}:
+            parent_call_id = (
+                self._tool_calls_by_start.get(source_parent)
+                if source_parent is not None
+                else None
+            )
+            parent_call = (
+                self._tool_calls.get(parent_call_id)
+                if parent_call_id is not None
+                else None
+            )
+            parent_compatible = parent_call is not None and all(
+                identity in parent_call[4]
+                for identity in self._tool_identity_parts(capture, semantic)
+            )
+            execution_identity = self._tool_execution_identity(capture, semantic)
+            semantic_call_id = (
+                self._canonical_call_id(capture, execution_identity)
+                if execution_identity is not None
+                else None
+            )
+            source_parent_meta = (
+                self._record_meta.get(source_parent)
+                if source_parent is not None
+                else None
+            )
+            declared_parent = (
+                source_parent_meta is not None
+                and source_parent_meta[0] == "tool.call"
+            )
+            call_id = (
+                None
+                if declared_parent and parent_call_id is None
+                else None
+                if parent_call_id is not None and not parent_compatible
+                else parent_call_id
+                if parent_call_id is not None
+                else semantic_call_id
+            )
+            call = self._tool_calls.pop(call_id, None) if call_id is not None else None
+            if call is not None:
+                self._tool_calls_by_start.pop(call[2], None)
+
+        if (
+            event_kind == "tool"
+            and semantic_type == "tool.execution"
+            and phase in {"start", "event"}
+        ):
+            local_call_id = self._call_id(capture, semantic)
+            local_proposal = self._tool_proposals.get(local_call_id)
+            identity_key = self._tool_proposal_identity_key(capture, semantic)
+            identity_call_id = (
+                self._tool_proposals_by_identity.get(identity_key)
+                if identity_key is not None
+                else None
+            )
+            identity_proposal = (
+                self._tool_proposals.get(identity_call_id)
+                if identity_call_id is not None
+                else None
+            )
+            if (
+                local_proposal is None
+                or identity_proposal is None
+                or local_proposal.record == identity_proposal.record
+            ):
+                proposal_call_id = (
+                    local_call_id if local_proposal is not None else identity_call_id
+                )
+                proposal = (
+                    self._tool_proposals.pop(proposal_call_id, None)
+                    if proposal_call_id is not None
+                    else None
+                )
+                if proposal is not None:
+                    self._tool_proposals_by_start.pop(proposal.source_record, None)
+                    if proposal.identity_key is not None:
+                        self._tool_proposals_by_identity.pop(
+                            proposal.identity_key,
+                            None,
+                        )
+        self._prune_correlation_history()
+
     def project(self, capture: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Return zero or more contract-shaped records for one capture row."""
         semantic_value = capture.get("semantic")

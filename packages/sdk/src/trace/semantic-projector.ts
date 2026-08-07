@@ -155,6 +155,93 @@ export class SemanticProjector {
     this.maxActiveCorrelations = maxActiveCorrelations;
   }
 
+  retireOmitted(input: SemanticCaptureEventV1): void {
+    const semanticType = text(input.semantic.type);
+    const capturedParent = input.correlation.parent_record_id;
+
+    if (input.event_kind === 'lifecycle' && terminal(input.phase)) {
+      const root = this.rootsByTrace.get(input.trace_id);
+      if (capturedParent && root?.sourceRecord === capturedParent) {
+        this.rootsByTrace.delete(input.trace_id);
+      }
+      if (capturedParent) this.scopes.delete(capturedParent);
+    }
+
+    if (input.event_kind === 'model' && semanticType === 'model.response') {
+      const parent = capturedParent
+        ? this.modelRequestsByRecord.get(capturedParent)
+        : undefined;
+      const native = input.native_identity
+        ? this.modelRequestsByNative.get(modelNativeKey(input))
+        : undefined;
+      const declaredParent = capturedParent
+        ? this.projectedKinds.get(capturedParent) === 'model.request'
+        : false;
+      if (
+        !(declaredParent && !parent)
+        && (!parent || !native || parent.record === native.record)
+      ) {
+        const request = parent ?? native;
+        if (request) this.consumeModelRequest(request);
+      }
+    }
+
+    if (
+      input.event_kind === 'tool'
+      && (semanticType === 'tool.result' || semanticType === 'tool.error')
+    ) {
+      const parentKey = capturedParent
+        ? this.callsByRecord.get(capturedParent)
+        : undefined;
+      const parentCall = parentKey ? this.calls.get(parentKey) : undefined;
+      const parentCompatible = parentCall
+        ? toolIdentityParts(input).every((identity) =>
+          parentCall.identityParts.includes(identity))
+        : false;
+      const executionIdentity = toolExecutionIdentityOf(input);
+      const semanticKey = executionIdentity
+        ? canonicalCallId(input, executionIdentity)
+        : undefined;
+      const declaredParent = capturedParent
+        ? this.projectedKinds.get(capturedParent) === 'tool.call'
+        : false;
+      const key = declaredParent && !parentKey
+        ? undefined
+        : parentKey && parentCompatible
+          ? parentKey
+          : parentKey && !parentCompatible
+          ? undefined
+          : semanticKey;
+      const call = key ? this.calls.get(key) : undefined;
+      if (key && call) {
+        this.calls.delete(key);
+        this.callsByRecord.delete(call.sourceRecord);
+      }
+    }
+
+    if (
+      input.event_kind === 'tool'
+      && semanticType === 'tool.execution'
+      && (input.phase === 'start' || input.phase === 'event')
+    ) {
+      const local = this.proposals.get(callIdOf(input));
+      const identity = this.proposalsByIdentity.get(
+        toolProposalIdentityKey(input) ?? '',
+      );
+      if (!local || !identity || local.record === identity.record) {
+        const proposal = local ?? identity;
+        if (proposal) {
+          this.proposals.delete(proposal.callId);
+          if (proposal.identityKey) {
+            this.proposalsByIdentity.delete(proposal.identityKey);
+          }
+          this.proposalsByRecord.delete(proposal.sourceRecord);
+        }
+      }
+    }
+    this.pruneCorrelationHistory();
+  }
+
   project(input: SemanticCaptureEventV1): SemanticTraceRecord[] {
     const semantic = input.semantic;
     const semanticType = text(semantic.type);

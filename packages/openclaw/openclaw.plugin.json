@@ -2,7 +2,7 @@
   "id": "semantic-layer-openclaw",
   "name": "Semantic Layer",
   "description": "Captures rich OpenClaw evidence into local semantic traces and durably queues sealed bundles for upload.",
-  "version": "0.1.0-pilot.1",
+  "version": "0.1.0-pilot.4",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -6912,7 +6912,7 @@ wheels = [
 
 [[package]]
 name = "semantic-layer-capture"
-version = "0.2.0b0"
+version = "0.2.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },

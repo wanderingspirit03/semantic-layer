@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { cp, lstat, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCapture, validateArtifact } from 'semantic-layer-capture';
@@ -11,10 +11,15 @@ type Handler = (
 ) => unknown;
 
 describe('persisted OpenClaw capture', () => {
-  it('seals a valid bundle with exact tool/scope pairs and native-only opaque reasoning evidence', async () => {
-    const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-'));
-    let artifactPath = '';
+  it('uploads a sealed trace when one hook payload is safely omitted', async () => {
+    const output = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-safe-omission-'),
+    );
     const handlers: Partial<Record<string, Handler>> = {};
+    const logs: string[] = [];
+    let artifactPath = '';
+    let enqueued = 0;
+    const privateSessionId = 'private-session-value-for-final-scan';
     try {
       const plugin = createPluginDefinition(
         {
@@ -22,6 +27,165 @@ describe('persisted OpenClaw capture', () => {
           createUploader: () => ({
             async enqueueArtifact(path: string) {
               artifactPath = path;
+              enqueued += 1;
+              return {
+                bundleId: 'bundle',
+                bundleDigest: 'digest',
+                state: 'pending' as const,
+              };
+            },
+            async flush() {
+              return { timedOut: false, uploadedBundles: 0 };
+            },
+            status() {
+              return { lifecycle: 'running', pressure: 'ok' };
+            },
+            async shutdown() {},
+          }),
+        },
+        { terminalGraceMs: 0 },
+      );
+      plugin.register({
+        pluginConfig: {
+          endpoint: 'https://ingest.example.test',
+          ingestKey: 'ingest-secret-value',
+          identityKey: 'identity-secret-value-which-is-long-enough',
+          installationId: 'install_0123456789abcdef0123456789abcdef',
+          serviceName: 'openclaw-safe-omission',
+          outputDirectory: output,
+        },
+        on(name, handler) {
+          handlers[name] = handler as Handler;
+        },
+        logger: {
+          debug(message) { logs.push(String(message)); },
+          info(message) { logs.push(String(message)); },
+          warn(message) { logs.push(String(message)); },
+          error(message) { logs.push(String(message)); },
+        },
+        runtime: { version: '2026.5.5' },
+      });
+      const context = {
+        runId: 'safe-omission-run',
+        sessionId: privateSessionId,
+      };
+      handlers.before_model_resolve!({ prompt: 'hello' }, context);
+      handlers.message_sent!(
+        {
+          runId: context.runId,
+          messageId: privateSessionId,
+          content: 'safe answer',
+        },
+        context,
+      );
+      await handlers.agent_end!(
+        { runId: context.runId, success: true, messages: [] },
+        context,
+      );
+
+      expect(enqueued).toBe(1);
+      expect(artifactPath).not.toBe('');
+      const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
+      expect(trace).not.toContain(privateSessionId);
+      expect(trace).toContain('scrubber_failure_payload_omitted');
+      expect(trace).not.toContain('unsupported_semantic_projection');
+      expect(logs.join('\n')).not.toContain(privateSessionId);
+      await expect(
+        validateArtifact(artifactPath, { secretValues: [privateSessionId] }),
+      ).resolves.toMatchObject({ valid: true, issues: [] });
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['awaiting', 'error'] as const)(
+    'retains the sealed source when durable staging returns %s',
+    async (outcome) => {
+      const output = await mkdtemp(
+        join(tmpdir(), `semantic-layer-openclaw-retained-${outcome}-`),
+      );
+      let sourceArtifactPath = '';
+      const handlers: Partial<Record<string, Handler>> = {};
+      try {
+        const plugin = createPluginDefinition(
+          {
+            createRunCapture: createCapture,
+            createUploader: () => ({
+              async enqueueArtifact(path: string) {
+                sourceArtifactPath = path;
+                if (outcome === 'error') throw new Error('staging failed');
+                return {
+                  bundleId: 'bundle',
+                  bundleDigest: 'digest',
+                  state: 'awaiting_spool_admission' as const,
+                };
+              },
+              async flush() {
+                return { timedOut: false, uploadedBundles: 0 };
+              },
+              status() {
+                return { lifecycle: 'running', pressure: 'full' };
+              },
+              async shutdown() {},
+            }),
+          },
+          { terminalGraceMs: 0 },
+        );
+        plugin.register({
+          pluginConfig: {
+            endpoint: 'https://ingest.example.test',
+            ingestKey: 'ingest-secret-value',
+            identityKey: 'identity-secret-value-which-is-long-enough',
+            installationId: 'install_0123456789abcdef0123456789abcdef',
+            serviceName: 'openclaw-retention-test',
+            outputDirectory: output,
+          },
+          on(name, handler) {
+            handlers[name] = handler as Handler;
+          },
+          logger: { debug() {}, info() {}, warn() {}, error() {} },
+          runtime: { version: '2026.5.5' },
+        });
+        const context = {
+          runId: `retained-${outcome}`,
+          sessionId: `session-${outcome}`,
+        };
+        handlers.before_model_resolve!({ prompt: 'hello' }, context);
+        await handlers.agent_end!(
+          { runId: context.runId, success: true, messages: [] },
+          context,
+        );
+
+        expect(sourceArtifactPath).not.toBe('');
+        expect((await lstat(sourceArtifactPath)).isDirectory()).toBe(true);
+      } finally {
+        await rm(output, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('seals a valid bundle with exact tool/scope pairs and native-only opaque reasoning evidence', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-'));
+    const staged = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-staged-'),
+    );
+    let artifactPath = '';
+    let sourceArtifactPath = '';
+    const handlers: Partial<Record<string, Handler>> = {};
+    try {
+      const plugin = createPluginDefinition(
+        {
+          createRunCapture: createCapture,
+          createUploader: () => ({
+            async enqueueArtifact(
+              path: string,
+              options?: { removeSourceAfterAdmissionFrom?: string },
+            ) {
+              sourceArtifactPath = path;
+              artifactPath = join(staged, 'bundle');
+              await cp(path, artifactPath, { recursive: true });
+              if (options?.removeSourceAfterAdmissionFrom === output)
+                await rm(path, { recursive: true, force: true });
               return {
                 bundleId: 'bundle',
                 bundleDigest: 'digest',
@@ -217,6 +381,9 @@ describe('persisted OpenClaw capture', () => {
       );
 
       expect(artifactPath).not.toBe('');
+      await expect(lstat(sourceArtifactPath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
       const validation = await validateArtifact(artifactPath, {
         profile: 'structural',
       });
@@ -304,20 +471,32 @@ describe('persisted OpenClaw capture', () => {
       expect(trace).not.toContain('ingest-secret-value');
     } finally {
       await rm(output, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
     }
   });
 
   it('seals when OpenClaw exposes the same native run and session identity', async () => {
     const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-shared-id-'));
+    const staged = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-shared-id-staged-'),
+    );
     let artifactPath = '';
+    let sourceArtifactPath = '';
     const handlers: Partial<Record<string, Handler>> = {};
     try {
       const plugin = createPluginDefinition(
         {
           createRunCapture: createCapture,
           createUploader: () => ({
-            async enqueueArtifact(path: string) {
-              artifactPath = path;
+            async enqueueArtifact(
+              path: string,
+              options?: { removeSourceAfterAdmissionFrom?: string },
+            ) {
+              sourceArtifactPath = path;
+              artifactPath = join(staged, 'bundle');
+              await cp(path, artifactPath, { recursive: true });
+              if (options?.removeSourceAfterAdmissionFrom === output)
+                await rm(path, { recursive: true, force: true });
               return {
                 bundleId: 'bundle',
                 bundleDigest: 'digest',
@@ -363,6 +542,9 @@ describe('persisted OpenClaw capture', () => {
       );
 
       expect(artifactPath).not.toBe('');
+      await expect(lstat(sourceArtifactPath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
       const validation = await validateArtifact(artifactPath, {
         profile: 'structural',
       });
@@ -373,6 +555,7 @@ describe('persisted OpenClaw capture', () => {
       expect(trace).not.toContain('scrubber_failure_payload_omitted');
     } finally {
       await rm(output, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
     }
   });
 });

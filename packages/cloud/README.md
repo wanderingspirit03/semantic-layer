@@ -3,7 +3,7 @@
 `semantic-layer-cloud` queues sealed Semantic Trace bundles on local disk and
 uploads their exact bytes. It works with manifest v1 and v2 bundles that use
 trace record schema v1. The package requires Node.js 22, Node.js 24, or
-Node.js 25.9 and newer.
+Node.js 25.9 or later.
 
 ## Install
 
@@ -34,7 +34,16 @@ await uploader.shutdown();
 
 `enqueueArtifact()` validates and copies a sealed bundle into the local spool.
 The copy is complete before the promise resolves, so the network can be offline.
-The source bundle is not changed.
+The source bundle is not changed. A returned `pending` state means the complete
+bundle is in durable pending storage. A returned `acked` state means a matching
+acknowledgement receipt already exists. An `awaiting_spool_admission` state does
+not authorize the caller to remove its source bundle.
+
+A host adapter that owns a dedicated trace output directory can pass
+`removeSourceAfterAdmissionFrom` to `enqueueArtifact()`. The uploader then
+removes only a direct, regular child of that directory, and only after a
+complete pending copy or matching acknowledgement exists. Unsafe paths,
+staging failures, and a full spool leave the source bundle in place.
 
 `flush()` uploads pending bundles until the deadline. `status()` returns bundle
 and byte counts, spool pressure, the oldest pending bundle, retry state,
@@ -73,6 +82,12 @@ The uploader keeps queued bundles under `spoolDirectory`, and files are private
 to the local owner. Keep `.semantic-layer/` out of source control. The default
 queue limit is 5 GiB. A full queue stops new upload admission without deleting
 stored bundles.
+
+After the ingest service acknowledges the exact bundle digest, the uploader
+keeps `receipt.json` and removes the acknowledged bundle bytes from its spool.
+It checks old acknowledgement directories again when it starts. A missing or
+invalid receipt never counts as an acknowledged bundle and does not authorize
+cleanup.
 
 The [ingest protocol](../../contracts/ingest/v1/README.md) defines HTTP
 requests, retry behavior, digests, limits, and completion rules.

@@ -92,7 +92,7 @@ describe('compact semantic trace writer', () => {
       schema: 'semantic_trace_manifest_v1',
       record_schema: 'semantic_trace_record_v1',
       state: 'sealed',
-      sdk: { language: 'typescript', version: '0.2.0-beta.0' },
+      sdk: { language: 'typescript', version: '0.2.0-beta.1' },
       privacy_mode: 'local-rich',
       trace: {
         path: 'trace.jsonl',

@@ -212,6 +212,11 @@ Parts and completion are immutable and idempotent for the same digest. The
 uploader may move a spool entry from `pending` to `acked` only after it validates
 the digest in the completion response.
 
+After that durable move, an uploader may remove its acknowledged bundle copy
+and keep the local acknowledgement receipt. A local `acked` entry is valid only
+when its receipt names the expected bundle ID and digest. Missing or invalid
+receipts must not authorize source cleanup.
+
 Clients retry network errors, `429`, and `5xx` responses with delay and random
 jitter. They pause after `401` or `403`, and they quarantine a `409` conflict.
 They never edit a sealed bundle to make a rejected upload pass.

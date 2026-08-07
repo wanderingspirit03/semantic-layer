@@ -1,6 +1,6 @@
 {
   "name": "semantic-layer-cloud",
-  "version": "0.1.0-pilot.1",
+  "version": "0.1.0-pilot.3",
   "type": "module",
   "description": "Durable framework-neutral uploader for Semantic Layer trace bundles",
   "license": "MIT",
@@ -18,7 +18,7 @@
     }
   },
   "bin": {
-    "semantic-layer-cloud": "./dist/cli.js"
+    "semantic-layer-cloud": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -33,7 +33,7 @@
     "prepack": "pnpm run build"
   },
   "dependencies": {
-    "semantic-layer-capture": "0.2.0-beta.0"
+    "semantic-layer-capture": "0.2.0-beta.1"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

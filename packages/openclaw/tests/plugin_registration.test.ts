@@ -66,7 +66,7 @@ describe('OpenClaw plugin registration', () => {
       {},
     );
     expect(errors).toEqual([
-      'Semantic Layer capture is disabled: configuration is incomplete. Run npx -y semantic-layer-openclaw-setup@0.1.0-pilot.1 doctor.',
+      'Semantic Layer capture is disabled: configuration is incomplete. Run the setup doctor.',
     ]);
   });
 

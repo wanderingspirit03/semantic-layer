@@ -38,7 +38,7 @@ from .permissions import (
 from .trace import SemanticProjector
 
 SDK_NAME = "semantic-layer-capture"
-SDK_VERSION = "0.2.0b0"
+SDK_VERSION = "0.2.0b1"
 QUEUE_CAPACITY = 64 * 1024 * 1024
 CONTROL_RESERVE = 64 * 1024
 MAX_SERIALIZATION_RETAINED_BYTES = 8 * 1024 * 1024
@@ -521,6 +521,19 @@ def _parse_json_or_json_lines(text: str) -> list[Any] | None:
             return [_STRICT_JSON_DECODE(line) for line in lines]
         except (json.JSONDecodeError, RecursionError):
             return None
+
+
+def _blocked_top_level_path(row: dict[str, Any], scanner: _Scanner) -> str:
+    for key, value in row.items():
+        encoded = json.dumps(
+            {key: value},
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode()
+        if not scanner.clean_json(encoded):
+            return f"/{key}"
+    return "/record"
 
 
 @dataclass(frozen=True)
@@ -1286,6 +1299,7 @@ class _Artifact:
         staged_blobs: list[dict[str, Any]] | None = None,
         allow_during_closing: bool = False,
         strict_control: bool = False,
+        allow_payload_omission: bool = True,
     ) -> AdmissionReceipt:
         with self._guard:
             return self._admit_locked(
@@ -1294,6 +1308,7 @@ class _Artifact:
                 staged_blobs=staged_blobs or [],
                 allow_during_closing=allow_during_closing,
                 strict_control=strict_control,
+                allow_payload_omission=allow_payload_omission,
             )
 
     def _admit_locked(
@@ -1304,6 +1319,7 @@ class _Artifact:
         staged_blobs: list[dict[str, Any]],
         allow_during_closing: bool,
         strict_control: bool,
+        allow_payload_omission: bool,
     ) -> AdmissionReceipt:
         if self.state != "accepting" and not (
             (control or allow_during_closing) and self.state == "closing"
@@ -1329,38 +1345,19 @@ class _Artifact:
         ).encode()
         record_id = str(row["record_id"])
         if not self.scanner.clean_json(data):
-            self.mark_rejected("scrubber_failure_payload_omitted")
-            fallback = self.admit(
-                {
-                    "trace_id": draft["trace_id"],
-                    "source": {
-                        "source_id": "builtin/semantic-layer-runtime",
-                        "name": "semantic-layer-runtime",
-                        "seam": "capture-runtime",
-                        "identity_domain": "semantic-layer",
-                        "official": True,
-                    },
-                    "event_kind": "unknown",
-                    "phase": "event",
-                    "name": "semantic_layer.payload_omitted",
-                    "native": None,
-                    "semantic": {"payload_omitted": True},
-                    "correlation": {},
-                    "loss_refs": [],
-                    "blob_refs": [],
-                },
-                control=True,
-            )
+            if not allow_payload_omission:
+                self.mark_rejected("scrubber_failure_payload_omitted")
+                return AdmissionReceipt(False, "fallback_failed")
+            self.projector.retire_omitted(row)
             loss = self.record_loss(
                 "scrubber_failure_payload_omitted",
                 str(draft["trace_id"]),
-                affected_record_id=fallback.record_id,
+                path=_blocked_top_level_path(row, self.scanner),
             )
-            reason = "final_secret_scan_blocked" if fallback.accepted else "fallback_failed"
             return AdmissionReceipt(
                 False,
-                reason,
-                settled=_Settled.combine([fallback.settled, loss.settled]),
+                "payload_omitted" if loss.accepted else "fallback_failed",
+                settled=loss.settled,
             )
         # One capture row can project to a terminal plus a child error. Reserve a
         # conservative upper bound before mutating the stateful projector.
@@ -1598,7 +1595,12 @@ class _Artifact:
                     "reason": reason,
                     "stage": _loss_stage(reason),
                     "recoverable": reason
-                    in {"credential_redaction", "unsafe_getter_avoided", "unsafe_helper_avoided"},
+                    in {
+                        "credential_redaction",
+                        "scrubber_failure_payload_omitted",
+                        "unsafe_getter_avoided",
+                        "unsafe_helper_avoided",
+                    },
                     **({"affected_path": path} if path else {}),
                     **({"affected_record_id": affected_record_id} if affected_record_id else {}),
                     **({"bytes": bytes_count} if bytes_count is not None else {}),
@@ -1608,6 +1610,7 @@ class _Artifact:
                 "blob_refs": [],
             },
             control=True,
+            allow_payload_omission=False,
         )
 
     def begin_closing(self) -> None:
@@ -2135,8 +2138,7 @@ class _SourceSink:
                 error_identity,
             )
         if (
-            receipt.accepted
-            and captured.get("kind") == "lifecycle"
+            captured.get("kind") == "lifecycle"
             and captured.get("phase") in {"end", "error", "cancelled"}
             and enriched.get("parent_record_id") == opened["start_record_id"]
         ):

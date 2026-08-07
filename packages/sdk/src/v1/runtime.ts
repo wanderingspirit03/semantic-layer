@@ -510,8 +510,7 @@ class CaptureRuntime {
         this.recordInputFaults(snapshot.faults, captured.trace, open?.identities ?? {}, receipt.accepted ? receipt.recordId : undefined, open?.traceparent);
         const terminalParent = captured.parentRecordId ?? open.startRecordId;
         if (
-          receipt.accepted
-          && captured.kind === 'lifecycle'
+          captured.kind === 'lifecycle'
           && ['end', 'error', 'cancelled'].includes(captured.phase)
           && terminalParent === open.startRecordId
         ) {
