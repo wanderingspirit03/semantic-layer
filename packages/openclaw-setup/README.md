@@ -12,7 +12,7 @@ container and service flows.
 Install the pinned pilot release:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.7 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
@@ -22,13 +22,13 @@ npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 setup \
 Restart the container through its platform, then check the live installation:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 doctor --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.7 doctor --container
 ```
 
 Remove only the Semantic Layer installation:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.6 uninstall --container --acknowledge-external-restart
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.7 uninstall --container --acknowledge-external-restart
 ```
 
 Setup and key rotation ask for the ingestion key in a hidden prompt. They do

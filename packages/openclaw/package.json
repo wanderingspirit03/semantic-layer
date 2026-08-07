@@ -1,6 +1,6 @@
 {
   "name": "semantic-layer-openclaw",
-  "version": "0.1.0-pilot.3",
+  "version": "0.1.0-pilot.4",
   "type": "module",
   "description": "OpenClaw semantic trace capture and durable cloud upload plugin",
   "license": "MIT",

@@ -26,7 +26,7 @@ import { checkCompatibility, type CompatibilityResult } from './preflight.js';
 
 const PLUGIN_ID = 'semantic-layer-openclaw';
 const PLUGIN_PACKAGE = 'semantic-layer-openclaw';
-const PLUGIN_VERSION = '0.1.0-pilot.3';
+const PLUGIN_VERSION = '0.1.0-pilot.4';
 const PACKAGE_SPEC = `npm:${PLUGIN_PACKAGE}@${PLUGIN_VERSION}`;
 const DEFAULT_OPENCLAW_SPOOL_BYTES = 1024 * 1024 * 1024;
 const SECRET_ENVIRONMENT_KEYS = [
@@ -54,7 +54,10 @@ export const REQUIRED_PLUGIN_HOOKS = [
 
 export async function main(
   argv = process.argv.slice(2),
-  testOptions: { readSetupIngestKey?: () => Promise<string> } = {},
+  testOptions: {
+    readSetupIngestKey?: () => Promise<string>;
+    readRotateIngestKey?: () => Promise<string>;
+  } = {},
 ): Promise<number> {
   const command = argv[0] ?? 'help';
   const args = argv.slice(1);
@@ -73,7 +76,8 @@ export async function main(
   if (command === 'doctor') return doctor({ container: args.includes('--container') });
   if (command === 'status') return cloudSpoolCommand(false);
   if (command === 'drain') return cloudSpoolCommand(true);
-  if (command === 'rotate-key') return rotateIngestionKey();
+  if (command === 'rotate-key')
+    return rotateIngestionKey(testOptions.readRotateIngestKey);
   if (command === 'uninstall') return uninstall(args);
   if (command === 'dry-run') return setup({ dryRun: true });
   if (command === 'setup')
@@ -501,8 +505,14 @@ async function setup(options: {
     }
     prompt?.close();
     prompt = undefined;
-    const ingestKey = await (options.readIngestKey ??
-      (() => hiddenQuestion('Ingestion key (hidden): ')))();
+    let ingestKey: string;
+    try {
+      ingestKey = await (options.readIngestKey ??
+        (() => hiddenQuestion('Ingestion key (hidden): ')))();
+    } catch {
+      process.stderr.write('FAIL Could not read the hidden ingestion key.\n');
+      return 1;
+    }
     if (!ingestKey) {
       process.stderr.write(
         'An ingestion key is required and identity key must contain 32+ characters. Secrets are never accepted on command lines.\n',
@@ -564,10 +574,8 @@ async function setup(options: {
     let snapshot: ManagedSetupSnapshot;
     try {
       snapshot = managedSetupSnapshot();
-    } catch (error) {
-      process.stderr.write(
-        `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
-      );
+    } catch {
+      process.stderr.write('FAIL Could not read the hidden ingestion key.\n');
       return 1;
     }
     const requestedState = createInstallationState({
@@ -1001,7 +1009,10 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-async function rotateIngestionKey(): Promise<number> {
+async function rotateIngestionKey(
+  readIngestKey: () => Promise<string> = () =>
+    hiddenQuestion('New ingestion key (hidden): '),
+): Promise<number> {
   const previous = await readSetupCredentials().catch((error: unknown) => {
     process.stderr.write(
       `FAIL ${error instanceof Error ? error.message : String(error)}\n`,
@@ -1032,9 +1043,15 @@ async function rotateIngestionKey(): Promise<number> {
   })();
   if (!endpoint) return 1;
   const configured = consumeSetupSecretEnvironment();
-  const nextKey =
-    configured.ingestKey ??
-    (await hiddenQuestion('New ingestion key (hidden): '));
+  let nextKey = configured.ingestKey;
+  if (!nextKey) {
+    try {
+      nextKey = await readIngestKey();
+    } catch {
+      process.stderr.write('FAIL Could not read the hidden ingestion key.\n');
+      return 1;
+    }
+  }
   if (!nextKey) {
     process.stderr.write('FAIL A new ingestion key is required.\n');
     return 1;
@@ -2333,15 +2350,24 @@ export async function hiddenQuestion(
   output: HiddenQuestionOutput = stdout,
 ): Promise<string> {
   if (!input.isTTY || typeof input.setRawMode !== 'function') {
-    const prompt = createInterface({
-      input: input as typeof stdin,
-      output: output as typeof stdout,
-    });
-    try {
-      return (await prompt.question(label)).trim();
-    } finally {
-      prompt.close();
+    const iterable = input as HiddenQuestionInput & AsyncIterable<Buffer | string>;
+    if (typeof iterable[Symbol.asyncIterator] !== 'function')
+      throw new Error('Hidden input stream is not readable.');
+    output.write(label);
+    let value = '';
+    for await (const chunk of iterable) {
+      for (const character of Buffer.from(chunk).toString('utf8')) {
+        if (character === '\n' || character === '\r') {
+          output.write('\n');
+          return value.trim();
+        }
+        value += character;
+        if (value.length > 4096)
+          throw new Error('Hidden input exceeds the 4096 character limit.');
+      }
     }
+    output.write('\n');
+    return value.trim();
   }
   output.write(label);
   input.setRawMode(true);
@@ -2367,7 +2393,14 @@ export async function hiddenQuestion(
           return;
         }
         if (byte === 127 || byte === 8) value = value.slice(0, -1);
-        else value += String.fromCharCode(byte);
+        else {
+          value += String.fromCharCode(byte);
+          if (value.length > 4096) {
+            cleanup();
+            reject(new Error('Hidden input exceeds the 4096 character limit.'));
+            return;
+          }
+        }
       }
     };
     input.on('data', onData);

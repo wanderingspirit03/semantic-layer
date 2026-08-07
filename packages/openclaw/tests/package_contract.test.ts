@@ -13,7 +13,7 @@ describe('published plugin contract', () => {
     );
 
     expect(packageJson.name).toBe('semantic-layer-openclaw');
-    expect(packageJson.version).toBe('0.1.0-pilot.3');
+    expect(packageJson.version).toBe('0.1.0-pilot.4');
     expect(packageJson.bin).toBeUndefined();
     expect(packageJson.dependencies).toEqual({
       'semantic-layer-capture': '0.2.0-beta.1',

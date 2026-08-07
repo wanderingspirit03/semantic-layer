@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   commandTimeoutMs,
   configuredString,
@@ -48,12 +48,12 @@ afterEach(async () => {
 describe('client setup command contract', () => {
   it('uses the exact native npm package spec and one explicit restart', () => {
     const commands = setupCommandPlan(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.3',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
     );
     expect(commands[0]).toEqual([
       'plugins',
       'install',
-      'npm:semantic-layer-openclaw@0.1.0-pilot.3',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
       '--pin',
     ]);
     expect(commands.some((args) => args.includes('patch'))).toBe(false);
@@ -75,7 +75,7 @@ describe('client setup command contract', () => {
 
   it('never changes or restarts the Gateway in container mode', () => {
     const commands = setupCommandPlan(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.3',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
       'container',
     );
     expect(commands).not.toContainEqual(['security', 'audit', '--json']);
@@ -91,7 +91,7 @@ describe('client setup command contract', () => {
       commandTimeoutMs([
         'plugins',
         'install',
-        'npm:semantic-layer-openclaw@0.1.0-pilot.3',
+        'npm:semantic-layer-openclaw@0.1.0-pilot.4',
       ]),
     ).toBe(300_000);
     expect(commandTimeoutMs(['gateway', 'restart'])).toBe(120_000);
@@ -296,11 +296,11 @@ describe('client setup command contract', () => {
 
   it('accepts only the exact public pilot or an absolute test tarball override', () => {
     expect(packageInstallSpec(undefined)).toBe(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.3',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
     );
     expect(
-      packageInstallSpec('npm:semantic-layer-openclaw@0.1.0-pilot.3'),
-    ).toBe('npm:semantic-layer-openclaw@0.1.0-pilot.3');
+      packageInstallSpec('npm:semantic-layer-openclaw@0.1.0-pilot.4'),
+    ).toBe('npm:semantic-layer-openclaw@0.1.0-pilot.4');
     expect(packageInstallSpec('npm-pack:/tmp/plugin.tgz')).toBe(
       '/tmp/plugin.tgz',
     );
@@ -430,6 +430,45 @@ describe('client setup command contract', () => {
     expect(writes.join('')).not.toContain('ingest-secret');
   });
 
+  it('rejects oversized interactive secret input without echoing it', async () => {
+    const listeners = new Set<(chunk: Buffer) => void>();
+    const rawModes: boolean[] = [];
+    const writes: string[] = [];
+    let paused = true;
+    const input = {
+      isTTY: true,
+      setRawMode(enabled: boolean) {
+        rawModes.push(enabled);
+      },
+      resume() {
+        paused = false;
+      },
+      pause() {
+        paused = true;
+      },
+      on(_event: 'data', listener: (chunk: Buffer) => void) {
+        listeners.add(listener);
+      },
+      off(_event: 'data', listener: (chunk: Buffer) => void) {
+        listeners.delete(listener);
+      },
+    };
+    const output = {
+      write(value: string) {
+        writes.push(value);
+      },
+    };
+    const secret = 's'.repeat(4097);
+
+    const answer = hiddenQuestion('Ingestion key (hidden): ', input, output);
+    for (const listener of listeners) listener(Buffer.from(secret));
+
+    await expect(answer).rejects.toThrow(/4096 character limit/u);
+    expect(paused).toBe(true);
+    expect(rawModes).toEqual([true, false]);
+    expect(writes.join('')).not.toContain(secret);
+  });
+
   it('reads one hidden ingestion key from noninteractive stdin', async () => {
     const input = Readable.from(['piped-ingest-secret\n']);
     const output = new PassThrough();
@@ -446,6 +485,25 @@ describe('client setup command contract', () => {
       ),
     ).resolves.toBe('piped-ingest-secret');
     expect(visible).not.toContain('piped-ingest-secret');
+  });
+
+  it('rejects oversized noninteractive secret input without echoing it', async () => {
+    const secret = 's'.repeat(4097);
+    const input = Readable.from([`${secret}\n`]);
+    const output = new PassThrough();
+    let visible = '';
+    output.on('data', (chunk: Buffer) => {
+      visible += chunk.toString('utf8');
+    });
+
+    await expect(
+      hiddenQuestion(
+        'Ingestion key (hidden): ',
+        input as Parameters<typeof hiddenQuestion>[1],
+        output,
+      ),
+    ).rejects.toThrow(/4096 character limit/u);
+    expect(visible).not.toContain(secret);
   });
 
   it('never passes setup secrets to an OpenClaw child process', async () => {
@@ -531,6 +589,46 @@ describe('client setup command contract', () => {
         ? new Response('{"status":"ok"}')
         : new Response('{"error":"UNAUTHENTICATED"}', { status: 401 });
     try {
+      const promptError = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+      const promptOutput = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation(() => true);
+      try {
+        await expect(
+          main(
+            [
+              'setup',
+              '--container',
+              '--endpoint',
+              'https://ingest.example.test',
+              '--service-name',
+              'customer-openclaw-vm-01',
+              '--installation-id',
+              'install_0123456789abcdef0123456789abcdef',
+            ],
+            {
+              readSetupIngestKey: async () => {
+                throw new Error('untrusted stream error sentinel-secret');
+              },
+            },
+          ),
+        ).resolves.toBe(1);
+        expect(promptError).toHaveBeenCalledWith(
+          'FAIL Could not read the hidden ingestion key.\n',
+        );
+        expect(JSON.stringify(promptError.mock.calls)).not.toContain(
+          'sentinel-secret',
+        );
+        expect(JSON.stringify(promptOutput.mock.calls)).not.toContain(
+          'sentinel-secret',
+        );
+      } finally {
+        promptError.mockRestore();
+        promptOutput.mockRestore();
+      }
+      expect(await readFile(configPath, 'utf8')).toBe(initialConfig);
       await expect(
         main(
           [
@@ -608,7 +706,7 @@ describe('client setup command contract', () => {
         'const args = process.argv.slice(2);',
         'const merge = (left, right) => { for (const [key, value] of Object.entries(right)) { if (value === null) delete left[key]; else left[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(left[key] && typeof left[key] === "object" && !Array.isArray(left[key]) ? left[key] : {}, value) : value; } return left; };',
         'const get = (root, path) => path.split(".").reduce((value, key) => value && typeof value === "object" ? value[key] : undefined, root);',
-        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.3' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.3', installPath: pluginInstallPath, source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.3' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
+        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.4' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.4', installPath: pluginInstallPath, source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.4' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
         "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
         "else if (args[0] === 'plugins' && args[1] === 'inspect') { if (!existsSync(process.env.PLUGIN_MARKER)) { process.stderr.write('Plugin not found: semantic-layer-openclaw\\n'); process.exitCode = 1; } else process.stdout.write(JSON.stringify(report)); }",
         "else if (args[0] === 'plugins' && args[1] === 'install') { mkdirSync(report.install.installPath, { recursive: true }); writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); }",
@@ -711,6 +809,41 @@ describe('client setup command contract', () => {
         identityKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         installationId,
       });
+      const credentialsBeforeFailedRotation = await readFile(
+        credentialPath,
+        'utf8',
+      );
+      delete process.env.SEMANTIC_LAYER_INGEST_KEY;
+      const errorOutput = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+      const normalOutput = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation(() => true);
+      try {
+        await expect(
+          main(['rotate-key'], {
+            readRotateIngestKey: async () => {
+              throw new Error('untrusted stream error sentinel-secret');
+            },
+          }),
+        ).resolves.toBe(1);
+        expect(errorOutput).toHaveBeenCalledWith(
+          'FAIL Could not read the hidden ingestion key.\n',
+        );
+        expect(JSON.stringify(errorOutput.mock.calls)).not.toContain(
+          'sentinel-secret',
+        );
+        expect(JSON.stringify(normalOutput.mock.calls)).not.toContain(
+          'sentinel-secret',
+        );
+      } finally {
+        errorOutput.mockRestore();
+        normalOutput.mockRestore();
+      }
+      expect(await readFile(credentialPath, 'utf8')).toBe(
+        credentialsBeforeFailedRotation,
+      );
       expect((await lstat(credentialPath)).mode & 0o077).toBe(0);
       expect(verifiedInstallationIds).toEqual([
         installationId,
@@ -745,7 +878,7 @@ describe('client setup command contract', () => {
         endpoint,
         installationId,
         pluginPackage: 'semantic-layer-openclaw',
-        pluginVersion: '0.1.0-pilot.3',
+        pluginVersion: '0.1.0-pilot.4',
         preservedEnabledPluginIds: ['latitude'],
         serviceName: 'customer-openclaw-vm-01',
         setupMode: 'container',
