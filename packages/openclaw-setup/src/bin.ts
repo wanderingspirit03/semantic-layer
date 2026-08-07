@@ -714,6 +714,14 @@ async function setup(options: {
             throw new Error(securityFailures.join(' '));
         }
       }
+      const candidateConfig = await readConfigFile(candidatePath);
+      const preservedFailures = preservedFileConfigurationFailures(
+        configBackup,
+        candidateConfig,
+        mode === 'container',
+      );
+      if (preservedFailures.length > 0)
+        throw new Error(preservedFailures.join(' '));
       await installConfigCandidate(candidatePath, configBackup);
       if (mode === 'service') {
         const restart = runOpenClaw(['gateway', 'restart']);
@@ -722,14 +730,6 @@ async function setup(options: {
             `OpenClaw command failed (gateway restart): ${restart.stderr || restart.stdout}`,
           );
       }
-      const installedConfig = await readConfigFile(configBackup.path);
-      const preservedFailures = preservedFileConfigurationFailures(
-        configBackup,
-        installedConfig,
-        mode === 'container',
-      );
-      if (preservedFailures.length > 0)
-        throw new Error(preservedFailures.join(' '));
       stdout.write(`Plugin: ${finalPlugin.installPath ?? 'installed'}\n`);
       stdout.write(`Credentials: ${credentialPath}\n`);
       stdout.write(`Local traces: ${outputDirectory}\n`);
@@ -1398,19 +1398,48 @@ function preservedFileConfigurationFailures(
   )
     failures.push('Setup changed Gateway configuration.');
   if (
-    canonicalJson(withoutManagedPlugin(beforeConfig)) !==
-    canonicalJson(withoutManagedPlugin(afterConfig))
+    canonicalJson(withoutManagedSetup(beforeConfig, preserveGateway)) !==
+    canonicalJson(withoutManagedSetup(afterConfig, preserveGateway))
   ) {
-    failures.push('Setup changed another plugin configuration entry.');
+    failures.push('Setup changed OpenClaw configuration outside its managed fields.');
   }
   return failures;
 }
 
-function withoutManagedPlugin(config: Record<string, unknown>): unknown {
-  if (!isRecord(config.plugins) || !isRecord(config.plugins.entries)) return {};
-  const entries = { ...config.plugins.entries };
-  delete entries[PLUGIN_ID];
-  return entries;
+function withoutManagedSetup(
+  config: Record<string, unknown>,
+  preserveGateway: boolean,
+): unknown {
+  const value = structuredClone(config);
+  deleteConfigValue(value, ['secrets', 'providers', 'semantic_layer']);
+  deleteConfigValue(value, ['plugins', 'entries', PLUGIN_ID]);
+  deleteConfigValue(value, ['plugins', 'installs', PLUGIN_ID]);
+  deleteConfigValue(value, ['meta', 'lastTouchedVersion']);
+  deleteConfigValue(value, ['meta', 'lastTouchedAt']);
+  removeEmptyConfigObject(value, ['secrets', 'providers']);
+  removeEmptyConfigObject(value, ['secrets']);
+  removeEmptyConfigObject(value, ['plugins', 'entries']);
+  removeEmptyConfigObject(value, ['plugins', 'installs']);
+  removeEmptyConfigObject(value, ['plugins']);
+  removeEmptyConfigObject(value, ['meta']);
+  if (!preserveGateway) delete value.gateway;
+  return value;
+}
+
+function removeEmptyConfigObject(
+  config: Record<string, unknown>,
+  path: string[],
+): void {
+  let parent: Record<string, unknown> = config;
+  for (const key of path.slice(0, -1)) {
+    const next = parent[key];
+    if (!isRecord(next)) return;
+    parent = next;
+  }
+  const leaf = path.at(-1);
+  if (!leaf) return;
+  const value = parent[leaf];
+  if (isRecord(value) && Object.keys(value).length === 0) delete parent[leaf];
 }
 
 function canonicalJson(value: unknown): string {

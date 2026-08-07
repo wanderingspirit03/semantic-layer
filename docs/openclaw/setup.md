@@ -126,9 +126,16 @@ The command prints the Node.js version that is actually running.
 
 ## Confirm one complete trace
 
-Run one normal OpenClaw task after doctor succeeds. Ask the agent to use one
-tool and return a final answer. For example, ask it to list the files in a new
-empty test folder and explain what it found.
+Run one private OpenClaw task after doctor succeeds. This command does not
+deliver the response to Slack or another channel:
+
+```sh
+openclaw agent \
+  --agent main \
+  --session-id "<PRIVATE_VERIFICATION_SESSION_ID>" \
+  --message "Use a shell tool to print the current working directory. Then return only that directory path. Do not read any file contents and do not send anything to Slack." \
+  --json
+```
 
 The task must finish normally. Run doctor again and send the installation ID
 to the Arcus pilot contact. Arcus confirms that the complete bundle arrived for
