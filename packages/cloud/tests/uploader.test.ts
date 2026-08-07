@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCapture } from 'semantic-layer-capture';
 import { computeBundleDigest, createCloudUploader } from '../src/index.js';
 
@@ -1108,22 +1108,33 @@ describe('semantic-layer-cloud', () => {
       join(tmpdir(), 'semantic-layer-cloud-quota-status-'),
     );
     const artifact = await copyExample(root);
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.99);
     const uploader = createCloudUploader({
       endpoint: 'https://ingest.invalid',
       ingestKey: 'test-ingest-key-123456',
       spoolDirectory: join(root, 'spool'),
       fetch: async () => new Response(null, { status: 429 }),
     });
-    await uploader.enqueueArtifact(artifact);
+    try {
+      await uploader.enqueueArtifact(artifact);
+      await vi.waitFor(
+        () => {
+          const status = uploader.status();
+          expect(status.pendingBundles).toBe(1);
+          expect(status.quotaLimited).toBe(true);
+          expect(status.retryingBundles).toBe(1);
+          expect(status.nextRetryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+        },
+        { timeout: 5_000 },
+      );
 
-    const result = await uploader.flush({ deadlineMs: 100 });
-
-    expect(result.pendingBundles).toBe(1);
-    expect(result.quotaLimited).toBe(true);
-    expect(result.retryingBundles).toBe(1);
-    expect(result.nextRetryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
-    expect(JSON.stringify(result)).not.toContain('test-ingest-key-123456');
-    await uploader.shutdown();
+      expect(JSON.stringify(uploader.status())).not.toContain(
+        'test-ingest-key-123456',
+      );
+    } finally {
+      random.mockRestore();
+      await uploader.shutdown();
+    }
   });
 
   it('stages and uploads a sealed bundle containing safe omission evidence', async () => {
