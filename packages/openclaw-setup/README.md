@@ -42,11 +42,12 @@ Setup and key rotation ask for the ingestion key in a hidden prompt. They do
 not accept a key on the command line. Each OpenClaw installation needs its own
 installation ID and key.
 
-Container setup preserves all Gateway values and all other plugins. It installs
-against a private config first. It writes the owner only credentials and setup
-state before the final config change can stop the foreground Gateway. Doctor is
-read only. It checks the selected local Gateway port without putting the Gateway
-secret on the command line. Uninstall
+Container setup preserves every config value outside the fields that Semantic
+Layer manages. This includes Gateway, Slack, Latitude, and all other plugins. It
+installs against a private config first. It writes the owner only credentials
+and setup state before the final config change can stop the foreground Gateway.
+Doctor is read only. It checks the selected local Gateway port without putting
+the Gateway secret on the command line. Uninstall
 preserves local traces and the upload spool. The acknowledgement flag confirms
 that the operator can restart the owning container or machine if the foreground
 Gateway exits during removal. Uninstall commits the clean config before it

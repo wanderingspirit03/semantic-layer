@@ -58,15 +58,16 @@ the following work:
    that private copy.
 4. It validates the complete private OpenClaw config.
 5. It replaces the live config in one step.
-6. It confirms that every Gateway value and every other plugin entry stayed the
-   same.
+6. It confirms that every config value outside the managed Semantic Layer
+   fields stayed the same.
 
 Setup checks the Semantic Layer credential file and secret references. It does
 not fail because of an existing secret warning in another part of the customer
 config.
 
 Container setup does not change Gateway mode, bind address, host, port, or any
-other Gateway value. It does not disable Latitude or another plugin. The live
+other Gateway value. It does not change Slack, Latitude, another plugin, or any
+other customer config. The live
 Gateway can still detect the final plugin config and exit cleanly. A platform
 such as Fly can then leave the machine stopped because Gateway is the foreground
 process.
