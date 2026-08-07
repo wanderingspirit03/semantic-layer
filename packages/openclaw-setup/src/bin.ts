@@ -1921,10 +1921,16 @@ async function readSetupCredentials(
     throw new Error(`${path} must be owner-only (chmod 600).`);
   if (typeof process.getuid === 'function' && metadata.uid !== process.getuid())
     throw new Error(`${path} must be owned by the current user.`);
-  const value = JSON.parse(await readFile(path, 'utf8')) as Record<
-    string,
-    unknown
-  >;
+  const contents = await readFile(path, 'utf8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents) as unknown;
+  } catch {
+    throw new Error(`${path} contains invalid JSON.`);
+  }
+  if (!isRecord(parsed))
+    throw new Error(`${path} must contain a credential object.`);
+  const value = parsed;
   const installationMissing = value.installationId === undefined;
   const installationInvalid =
     typeof value.installationId === 'string'

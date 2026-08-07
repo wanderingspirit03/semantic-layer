@@ -1,6 +1,7 @@
 import {
   chmod,
   lstat,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -504,6 +505,57 @@ describe('client setup command contract', () => {
       ),
     ).rejects.toThrow(/4096 character limit/u);
     expect(visible).not.toContain(secret);
+  });
+
+  it('does not expose malformed credential contents in command output', async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-openclaw-malformed-credentials-'),
+    );
+    temporaryDirectories.push(directory);
+    const executable = join(directory, 'openclaw-fixture');
+    const credentialDirectory = join(directory, 'semantic-layer');
+    const credentialPath = join(credentialDirectory, 'credentials.json');
+    const secret = 'sentinel-malformed-ingest-secret';
+    await mkdir(credentialDirectory, { recursive: true });
+    await writeFile(
+      credentialPath,
+      `{"ingestKey":"${secret}",`,
+      { mode: 0o600 },
+    );
+    await writeFile(
+      executable,
+      [
+        '#!/usr/bin/env node',
+        "if (process.argv[2] === 'gateway' && process.argv[3] === 'status') process.stdout.write(JSON.stringify({ service: { runtime: { status: 'stopped' } } }));",
+        '',
+      ].join('\n'),
+    );
+    await chmod(executable, 0o700);
+    const previous = {
+      bin: process.env.OPENCLAW_BIN,
+      state: process.env.OPENCLAW_STATE_DIR,
+    };
+    process.env.OPENCLAW_BIN = executable;
+    process.env.OPENCLAW_STATE_DIR = directory;
+    const errorOutput = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    const normalOutput = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+    try {
+      await expect(main(['status'])).resolves.toBe(1);
+      expect(JSON.stringify(errorOutput.mock.calls)).toContain(
+        'credentials.json contains invalid JSON',
+      );
+      expect(JSON.stringify(errorOutput.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(normalOutput.mock.calls)).not.toContain(secret);
+    } finally {
+      errorOutput.mockRestore();
+      normalOutput.mockRestore();
+      restoreEnvironment('OPENCLAW_BIN', previous.bin);
+      restoreEnvironment('OPENCLAW_STATE_DIR', previous.state);
+    }
   });
 
   it('never passes setup secrets to an OpenClaw child process', async () => {
