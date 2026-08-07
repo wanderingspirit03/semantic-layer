@@ -12,7 +12,7 @@ describe('published setup package contract', () => {
     );
 
     expect(packageJson.name).toBe('semantic-layer-openclaw-setup');
-    expect(packageJson.version).toBe('0.1.0-pilot.8');
+    expect(packageJson.version).toBe('0.1.0-pilot.9');
     expect(packageJson.bin).toEqual({
       'semantic-layer-openclaw-setup': 'dist/bin.js',
     });
