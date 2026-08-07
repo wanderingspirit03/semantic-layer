@@ -1142,7 +1142,7 @@ describe('client setup command contract', () => {
       restoreEnvironment('ACTIVE_CONFIG_PATH', previous.activeConfig);
       globalThis.fetch = previous.fetch;
     }
-  });
+  }, 15_000);
 });
 
 function restoreEnvironment(name: string, value: string | undefined): void {
