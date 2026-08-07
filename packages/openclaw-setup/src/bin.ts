@@ -575,7 +575,9 @@ async function setup(options: {
     try {
       snapshot = managedSetupSnapshot();
     } catch {
-      process.stderr.write('FAIL Could not read the hidden ingestion key.\n');
+      process.stderr.write(
+        'FAIL Could not inspect the current OpenClaw setup state.\n',
+      );
       return 1;
     }
     const requestedState = createInstallationState({
