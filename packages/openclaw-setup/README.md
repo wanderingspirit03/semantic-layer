@@ -12,32 +12,42 @@ container and service flows.
 Install the pinned pilot release:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.8 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.9 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
   --installation-id "<INSTALLATION_ID>"
 ```
 
-Restart the container through its platform, then check the live installation:
+The final config change can stop a foreground Gateway. If the machine stops,
+start it through its platform. Run the same setup command again. The second run
+uses the stored owner only key and does not ask for another key.
+
+Then check the live installation. Pass the local Gateway URL when its runtime
+port is not saved in the OpenClaw config:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.8 doctor --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.9 doctor \
+  --container \
+  --gateway-url "ws://127.0.0.1:3001"
 ```
 
 Remove only the Semantic Layer installation:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.8 uninstall --container --acknowledge-external-restart
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.9 uninstall --container --acknowledge-external-restart
 ```
 
 Setup and key rotation ask for the ingestion key in a hidden prompt. They do
 not accept a key on the command line. Each OpenClaw installation needs its own
 installation ID and key.
 
-Container setup preserves all Gateway values and all other plugins. It does not
-restart the container. Doctor is read only. It checks the configured local
-Gateway port without putting the Gateway secret on the command line. Uninstall
+Container setup preserves every config value outside the fields that Semantic
+Layer manages. This includes Gateway, Slack, Latitude, and all other plugins. It
+installs against a private config first. It writes the owner only credentials
+and setup state before the final config change can stop the foreground Gateway.
+Doctor is read only. It checks the selected local Gateway port without putting
+the Gateway secret on the command line. Uninstall
 preserves local traces and the upload spool. The acknowledgement flag confirms
 that the operator can restart the owning container or machine if the foreground
 Gateway exits during removal. Uninstall commits the clean config before it

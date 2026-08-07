@@ -32,14 +32,14 @@ containers, run setup once on each one with its own installation ID and key.
 
 ## Container installation
 
-The pinned container pilot uses setup package `0.1.0-pilot.8` and runtime
+The pinned container pilot uses setup package `0.1.0-pilot.9` and runtime
 plugin `0.1.0-pilot.4`.
 
 Run this command inside the OpenClaw container as the same user that runs
 OpenClaw:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.8 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.9 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
@@ -52,20 +52,25 @@ Setup first checks the key and installation ID with the ingest service. It does
 not change the host if this check fails. After the check succeeds, setup does
 the following work:
 
-1. It installs the pinned Semantic Layer plugin through OpenClaw.
-2. It stores the key and installation identity in owner only files.
-3. It enables only the Semantic Layer plugin entry and its secret reference.
-4. It validates the final OpenClaw configuration.
-5. It confirms that every Gateway value and every other plugin entry stayed the
-   same.
+1. It stores the key and installation identity in owner only files.
+2. It installs the pinned plugin against a private copy of the OpenClaw config.
+3. It enables only the Semantic Layer plugin entry and its secret reference in
+   that private copy.
+4. It validates the complete private OpenClaw config.
+5. It replaces the live config in one step.
+6. It confirms that every config value outside the managed Semantic Layer
+   fields stayed the same.
 
 Setup checks the Semantic Layer credential file and secret references. It does
 not fail because of an existing secret warning in another part of the customer
 config.
 
 Container setup does not change Gateway mode, bind address, host, port, or any
-other Gateway value. It does not disable Latitude or another plugin. It does
-not call a service manager and does not restart the container.
+other Gateway value. It does not change Slack, Latitude, another plugin, or any
+other customer config. The live
+Gateway can still detect the final plugin config and exit cleanly. A platform
+such as Fly can then leave the machine stopped because Gateway is the foreground
+process.
 
 A successful setup ends with output like this:
 
@@ -75,27 +80,35 @@ Credentials: /customer/.openclaw/semantic-layer/credentials.json
 Local traces: /customer/.openclaw/semantic-layer/traces
 Durable upload spool: /customer/.openclaw/semantic-layer/cloud-spool
 Upload spool limit: 1073741824 bytes
-OK. Restart the container, then run doctor --container.
+OK. The complete config is ready. If the foreground Gateway stopped, restart its machine. Rerun this setup command to confirm completion, then run doctor --container.
 ```
 
 The exact root follows the active OpenClaw home or state directory. Setup
 prints the resolved paths.
 
-Restart the container through the platform that owns it. Do not run an
-OpenClaw service restart for this container flow.
+If the setup connection closes or the machine stops, start the machine through
+the platform that owns it. Do not run an OpenClaw service restart for this
+container flow. Run the same setup command again after the machine starts. The
+second run uses the stored owner only key. It checks the finished installation
+without asking for another key or installing the plugin again.
 
 After Gateway is healthy, run:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.8 doctor --container
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.9 doctor \
+  --container \
+  --gateway-url "ws://127.0.0.1:3001"
 ```
 
 Doctor is read only. It checks the pinned plugin identity, persistent plugin
 location, plugin hooks, credentials, installation state, file permissions,
 endpoint authentication, local spool, the plugins that were enabled before
 setup, and the running Gateway. In container mode, doctor reads the configured
-Gateway port. It uses an owner only temporary config to check the local Gateway
-with the existing authentication settings, then removes that file. It does not
+Gateway port. Use `--gateway-url` when the port comes from the runtime command
+instead of the saved config. The URL must use `ws://`, a loopback host, and an
+explicit port. Doctor copies that port into an owner only temporary config. It
+uses the existing authentication settings to check the local Gateway and then
+removes that file. It does not
 change the live config, put a Gateway secret on the command line, require a
 local bind or service manager, or create a trace.
 
@@ -114,9 +127,16 @@ The command prints the Node.js version that is actually running.
 
 ## Confirm one complete trace
 
-Run one normal OpenClaw task after doctor succeeds. Ask the agent to use one
-tool and return a final answer. For example, ask it to list the files in a new
-empty test folder and explain what it found.
+Run one private OpenClaw task after doctor succeeds. This command does not
+deliver the response to Slack or another channel:
+
+```sh
+openclaw agent \
+  --agent main \
+  --session-id "<PRIVATE_VERIFICATION_SESSION_ID>" \
+  --message "Use a shell tool to print the current working directory. Then return only that directory path. Do not read any file contents and do not send anything to Slack." \
+  --json
+```
 
 The task must finish normally. Run doctor again and send the installation ID
 to the Arcus pilot contact. Arcus confirms that the complete bundle arrived for
@@ -170,7 +190,7 @@ acknowledgement.
 Run this command inside the container:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.8 uninstall --container --acknowledge-external-restart
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.9 uninstall --container --acknowledge-external-restart
 ```
 
 The command removes the Semantic Layer plugin, its config entry, its secret

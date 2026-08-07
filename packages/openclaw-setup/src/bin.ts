@@ -73,7 +73,13 @@ export async function main(
     stdout.write(helpText());
     return 0;
   }
-  if (command === 'doctor') return doctor({ container: args.includes('--container') });
+  if (command === 'doctor') {
+    const gatewayUrl = optionValue(args, '--gateway-url');
+    return doctor({
+      container: args.includes('--container'),
+      ...(gatewayUrl ? { gatewayUrl } : {}),
+    });
+  }
   if (command === 'status') return cloudSpoolCommand(false);
   if (command === 'drain') return cloudSpoolCommand(true);
   if (command === 'rotate-key')
@@ -92,7 +98,10 @@ export async function main(
   return 2;
 }
 
-async function doctor(options: { container: boolean }): Promise<number> {
+async function doctor(options: {
+  container: boolean;
+  gatewayUrl?: string;
+}): Promise<number> {
   const failures: string[] = [];
   let credentials: SetupCredentials | undefined;
   let installationState: InstallationState | undefined;
@@ -212,7 +221,9 @@ async function doctor(options: { container: boolean }): Promise<number> {
         failures.push(...securityAuditFailures(result.stdout));
     }
     if (options.container) {
-      const gatewayFailure = await containerGatewayHealthFailure();
+      const gatewayFailure = await containerGatewayHealthFailure(
+        options.gatewayUrl,
+      );
       if (gatewayFailure) failures.push(gatewayFailure);
     }
     if (!options.container) {
@@ -447,7 +458,7 @@ async function setup(options: {
         `Would install ${packageSpec} with the native OpenClaw plugin installer.`,
         'Would create an owner-only JSON credential file and configure file SecretRefs.',
         mode === 'container'
-          ? 'Would enable rich conversation hooks without changing or restarting the Gateway.'
+          ? 'Would stage the complete plugin config away from the live Gateway, then commit it. The foreground Gateway may exit after that final commit.'
           : 'Would enable rich conversation hooks, restart the Gateway exactly once, then run doctor.',
         'No files or OpenClaw state were changed.',
         '',
@@ -503,21 +514,65 @@ async function setup(options: {
       );
       return 2;
     }
-    prompt?.close();
-    prompt = undefined;
-    let ingestKey: string;
-    try {
-      ingestKey = await (options.readIngestKey ??
-        (() => hiddenQuestion('Ingestion key (hidden): ')))();
-    } catch {
-      process.stderr.write('FAIL Could not read the hidden ingestion key.\n');
-      return 1;
-    }
-    if (!ingestKey) {
+    if (!endpoint.startsWith('https://') || !serviceName) {
       process.stderr.write(
-        'An ingestion key is required and identity key must contain 32+ characters. Secrets are never accepted on command lines.\n',
+        'Endpoint must use HTTPS and service name must not be empty.\n',
       );
       return 1;
+    }
+    const stateDirectory = dirname(dirname(credentialPath));
+    const outputDirectory = join(stateDirectory, 'semantic-layer', 'traces');
+    const spoolDirectory = join(
+      stateDirectory,
+      'semantic-layer',
+      'cloud-spool',
+    );
+    let snapshot: ManagedSetupSnapshot;
+    try {
+      snapshot = managedSetupSnapshot();
+    } catch {
+      process.stderr.write(
+        'FAIL Could not inspect the current OpenClaw setup state.\n',
+      );
+      return 1;
+    }
+    const requestedState = createInstallationState({
+      endpoint,
+      installationId: assignedInstallationId,
+      preservedEnabledPluginIds:
+        existingInstallationState?.preservedEnabledPluginIds ??
+        enabledOtherPluginIds(snapshot.pluginEntries),
+      serviceName,
+      mode,
+    });
+    const ownershipFailures = managedOwnershipFailures({
+      credentials: existingCredentials,
+      installationState: existingInstallationState,
+      requestedState,
+      snapshot,
+    });
+    if (ownershipFailures.length > 0) {
+      for (const failure of ownershipFailures)
+        process.stderr.write(`FAIL ${failure}\n`);
+      return 1;
+    }
+    prompt?.close();
+    prompt = undefined;
+    let ingestKey = existingCredentials?.ingestKey;
+    if (!ingestKey) {
+      try {
+        ingestKey = await (options.readIngestKey ??
+          (() => hiddenQuestion('Ingestion key (hidden): ')))();
+      } catch {
+        process.stderr.write('FAIL Could not read the hidden ingestion key.\n');
+        return 1;
+      }
+      if (!ingestKey) {
+        process.stderr.write(
+          'An ingestion key is required and identity key must contain 32+ characters. Secrets are never accepted on command lines.\n',
+        );
+        return 1;
+      }
     }
     let credentials: SetupCredentials;
     try {
@@ -539,12 +594,6 @@ async function setup(options: {
       );
       return 1;
     }
-    if (!endpoint.startsWith('https://') || !serviceName) {
-      process.stderr.write(
-        'Endpoint must use HTTPS and service name must not be empty.\n',
-      );
-      return 1;
-    }
     const health = await cloudHealth(endpoint);
     if (!health.ok) {
       process.stderr.write(
@@ -563,44 +612,6 @@ async function setup(options: {
       );
       return 1;
     }
-
-    const stateDirectory = dirname(dirname(credentialPath));
-    const outputDirectory = join(stateDirectory, 'semantic-layer', 'traces');
-    const spoolDirectory = join(
-      stateDirectory,
-      'semantic-layer',
-      'cloud-spool',
-    );
-    let snapshot: ManagedSetupSnapshot;
-    try {
-      snapshot = managedSetupSnapshot();
-    } catch {
-      process.stderr.write(
-        'FAIL Could not inspect the current OpenClaw setup state.\n',
-      );
-      return 1;
-    }
-    const requestedState = createInstallationState({
-      endpoint,
-      installationId: credentials.installationId,
-      preservedEnabledPluginIds:
-        existingInstallationState?.preservedEnabledPluginIds ??
-        enabledOtherPluginIds(snapshot.pluginEntries),
-      serviceName,
-      mode,
-    });
-    const ownershipFailures = managedOwnershipFailures({
-      credentials: existingCredentials,
-      installationState: existingInstallationState,
-      requestedState,
-      snapshot,
-    });
-    if (ownershipFailures.length > 0) {
-      for (const failure of ownershipFailures)
-        process.stderr.write(`FAIL ${failure}\n`);
-      return 1;
-    }
-
     let configBackup: ConfigFileSnapshot;
     try {
       configBackup = await readActiveConfigFile();
@@ -615,6 +626,10 @@ async function setup(options: {
       dirname(configBackup.path),
       `.semantic-layer-config-${process.pid}-${Date.now()}.json`,
     );
+    const installCandidatePath = join(
+      dirname(configBackup.path),
+      `.semantic-layer-install-${process.pid}-${Date.now()}.json`,
+    );
 
     const credentialBackup = existingCredentials
       ? await readFile(credentialPath)
@@ -625,31 +640,6 @@ async function setup(options: {
     const createdDirectories: string[] = [];
     let installedThisRun = false;
     try {
-      if (!snapshot.plugin) {
-        const installCommand = pluginInstallCommand(packageSpec);
-        const installResult = runOpenClaw(installCommand);
-        if (!installResult.ok)
-          throw new Error(
-            `OpenClaw command failed (${installCommand.join(' ')}): ${installResult.stderr || installResult.stdout}`,
-          );
-        installedThisRun = true;
-        const installed = inspectInstalledPlugin();
-        if (
-          !installed ||
-          installed.packageName !== PLUGIN_PACKAGE ||
-          installed.version !== PLUGIN_VERSION
-        ) {
-          throw new Error(
-            `Installed plugin is not ${PLUGIN_PACKAGE}@${PLUGIN_VERSION}.`,
-          );
-        }
-      }
-      const finalPlugin = inspectInstalledPlugin();
-      if (!finalPlugin)
-        throw new Error('Semantic Layer plugin package is not installed.');
-      const pluginPathFailure = await installedPluginPathFailure(finalPlugin);
-      if (pluginPathFailure) throw new Error(pluginPathFailure);
-
       for (const directory of [
         dirname(credentialPath),
         outputDirectory,
@@ -662,6 +652,39 @@ async function setup(options: {
       await writeCredentialsAtomically(credentials);
       await writeInstallationStateAtomically(requestedState);
 
+      let configBase = configBackup;
+      let finalPlugin = snapshot.plugin;
+      if (!snapshot.plugin) {
+        await writeNewConfigFile(installCandidatePath, configBackup.contents);
+        const installCommand = pluginInstallCommand(packageSpec);
+        const installResult = runOpenClaw(installCommand, {
+          OPENCLAW_CONFIG_PATH: installCandidatePath,
+        });
+        if (!installResult.ok)
+          throw new Error(
+            `OpenClaw command failed (${installCommand.join(' ')}): ${installResult.stderr || installResult.stdout}`,
+          );
+        installedThisRun = true;
+        const installed = inspectInstalledPlugin({
+          OPENCLAW_CONFIG_PATH: installCandidatePath,
+        });
+        if (
+          !installed ||
+          installed.packageName !== PLUGIN_PACKAGE ||
+          installed.version !== PLUGIN_VERSION
+        ) {
+          throw new Error(
+            `Installed plugin is not ${PLUGIN_PACKAGE}@${PLUGIN_VERSION}.`,
+          );
+        }
+        finalPlugin = installed;
+        configBase = await readConfigFile(installCandidatePath);
+      }
+      if (!finalPlugin)
+        throw new Error('Semantic Layer plugin package is not installed.');
+      const pluginPathFailure = await installedPluginPathFailure(finalPlugin);
+      if (pluginPathFailure) throw new Error(pluginPathFailure);
+
       const patch = createOpenClawConfigPatch({
         endpoint,
         serviceName,
@@ -671,8 +694,7 @@ async function setup(options: {
         credentials,
         mode,
       });
-      const currentConfig = await readConfigFile(configBackup.path);
-      await writeManagedConfigCandidate(currentConfig, patch, candidatePath);
+      await writeManagedConfigCandidate(configBase, patch, candidatePath);
 
       const setupCommands = setupCommandPlan(packageSpec, mode).slice(1);
       for (const args of setupCommands.filter(
@@ -692,6 +714,14 @@ async function setup(options: {
             throw new Error(securityFailures.join(' '));
         }
       }
+      const candidateConfig = await readConfigFile(candidatePath);
+      const preservedFailures = preservedFileConfigurationFailures(
+        configBackup,
+        candidateConfig,
+        mode === 'container',
+      );
+      if (preservedFailures.length > 0)
+        throw new Error(preservedFailures.join(' '));
       await installConfigCandidate(candidatePath, configBackup);
       if (mode === 'service') {
         const restart = runOpenClaw(['gateway', 'restart']);
@@ -700,14 +730,6 @@ async function setup(options: {
             `OpenClaw command failed (gateway restart): ${restart.stderr || restart.stdout}`,
           );
       }
-      const installedConfig = await readConfigFile(configBackup.path);
-      const preservedFailures = preservedFileConfigurationFailures(
-        configBackup,
-        installedConfig,
-        mode === 'container',
-      );
-      if (preservedFailures.length > 0)
-        throw new Error(preservedFailures.join(' '));
       stdout.write(`Plugin: ${finalPlugin.installPath ?? 'installed'}\n`);
       stdout.write(`Credentials: ${credentialPath}\n`);
       stdout.write(`Local traces: ${outputDirectory}\n`);
@@ -730,13 +752,18 @@ async function setup(options: {
         process.stderr.write(`FAIL Rollback: ${failure}\n`);
       return 1;
     } finally {
-      await rm(candidatePath, { force: true });
+      await Promise.all([
+        rm(candidatePath, { force: true }),
+        rm(installCandidatePath, { force: true }),
+      ]);
     }
   } finally {
     prompt?.close();
   }
   if (mode === 'container') {
-    stdout.write('OK. Restart the container, then run doctor --container.\n');
+    stdout.write(
+      'OK. The complete config is ready. If the foreground Gateway stopped, restart its machine. Rerun this setup command to confirm completion, then run doctor --container.\n',
+    );
     return 0;
   }
   return doctor({ container: false });
@@ -950,7 +977,9 @@ async function uninstall(args: string[]): Promise<number> {
   return 0;
 }
 
-async function containerGatewayHealthFailure(): Promise<string | undefined> {
+async function containerGatewayHealthFailure(
+  gatewayUrl?: string,
+): Promise<string | undefined> {
   let config: ConfigFileSnapshot;
   try {
     config = await readActiveConfigFile();
@@ -966,6 +995,7 @@ async function containerGatewayHealthFailure(): Promise<string | undefined> {
     const value = parseConfigObject(config);
     const gateway = ensureConfigObject(value, 'gateway', 'gateway');
     gateway.mode = 'local';
+    if (gatewayUrl) gateway.port = gatewayPort(gatewayUrl);
     await writeNewConfigFile(
       probePath,
       Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'),
@@ -983,8 +1013,35 @@ async function containerGatewayHealthFailure(): Promise<string | undefined> {
   }
 }
 
+export function gatewayPort(value: string): number {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new TypeError('--gateway-url must be a valid ws:// loopback URL.');
+  }
+  if (
+    parsed.protocol !== 'ws:' ||
+    !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== '/' ||
+    parsed.search ||
+    parsed.hash ||
+    !parsed.port
+  ) {
+    throw new TypeError(
+      '--gateway-url must be a ws:// loopback URL with an explicit port and no credentials or path.',
+    );
+  }
+  const port = Number(parsed.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535)
+    throw new TypeError('--gateway-url must contain a valid port.');
+  return port;
+}
+
 async function removeStaleConfigFiles(directory: string): Promise<void> {
-  const pattern = /^\.semantic-layer-(?:config|doctor|restore|rollback-config|uninstall|uninstall-operation)-(\d+)-(\d+)\.json$/u;
+  const pattern = /^\.semantic-layer-(?:config|install|doctor|restore|rollback-config|uninstall|uninstall-operation)-(\d+)-(\d+)\.json$/u;
   for (const name of await readdir(directory)) {
     const match = pattern.exec(name);
     if (!match) continue;
@@ -1238,8 +1295,13 @@ function configValueSnapshot(path: string): ConfigValueSnapshot {
   }
 }
 
-function inspectInstalledPlugin(): InstalledPlugin | undefined {
-  const result = runOpenClaw(['plugins', 'inspect', PLUGIN_ID, '--json']);
+function inspectInstalledPlugin(
+  environmentOverrides: NodeJS.ProcessEnv = {},
+): InstalledPlugin | undefined {
+  const result = runOpenClaw(
+    ['plugins', 'inspect', PLUGIN_ID, '--json'],
+    environmentOverrides,
+  );
   if (!result.ok) {
     if (/Plugin not found:/u.test(`${result.stderr}\n${result.stdout}`))
       return undefined;
@@ -1336,19 +1398,48 @@ function preservedFileConfigurationFailures(
   )
     failures.push('Setup changed Gateway configuration.');
   if (
-    canonicalJson(withoutManagedPlugin(beforeConfig)) !==
-    canonicalJson(withoutManagedPlugin(afterConfig))
+    canonicalJson(withoutManagedSetup(beforeConfig, preserveGateway)) !==
+    canonicalJson(withoutManagedSetup(afterConfig, preserveGateway))
   ) {
-    failures.push('Setup changed another plugin configuration entry.');
+    failures.push('Setup changed OpenClaw configuration outside its managed fields.');
   }
   return failures;
 }
 
-function withoutManagedPlugin(config: Record<string, unknown>): unknown {
-  if (!isRecord(config.plugins) || !isRecord(config.plugins.entries)) return {};
-  const entries = { ...config.plugins.entries };
-  delete entries[PLUGIN_ID];
-  return entries;
+function withoutManagedSetup(
+  config: Record<string, unknown>,
+  preserveGateway: boolean,
+): unknown {
+  const value = structuredClone(config);
+  deleteConfigValue(value, ['secrets', 'providers', 'semantic_layer']);
+  deleteConfigValue(value, ['plugins', 'entries', PLUGIN_ID]);
+  deleteConfigValue(value, ['plugins', 'installs', PLUGIN_ID]);
+  deleteConfigValue(value, ['meta', 'lastTouchedVersion']);
+  deleteConfigValue(value, ['meta', 'lastTouchedAt']);
+  removeEmptyConfigObject(value, ['secrets', 'providers']);
+  removeEmptyConfigObject(value, ['secrets']);
+  removeEmptyConfigObject(value, ['plugins', 'entries']);
+  removeEmptyConfigObject(value, ['plugins', 'installs']);
+  removeEmptyConfigObject(value, ['plugins']);
+  removeEmptyConfigObject(value, ['meta']);
+  if (!preserveGateway) delete value.gateway;
+  return value;
+}
+
+function removeEmptyConfigObject(
+  config: Record<string, unknown>,
+  path: string[],
+): void {
+  let parent: Record<string, unknown> = config;
+  for (const key of path.slice(0, -1)) {
+    const next = parent[key];
+    if (!isRecord(next)) return;
+    parent = next;
+  }
+  const leaf = path.at(-1);
+  if (!leaf) return;
+  const value = parent[leaf];
+  if (isRecord(value) && Object.keys(value).length === 0) delete parent[leaf];
 }
 
 function canonicalJson(value: unknown): string {
@@ -1434,15 +1525,23 @@ function managedOwnershipFailures(input: {
     );
   }
   if (!hasOwnerState) {
-    if (input.snapshot.plugin)
+    const incompleteNativeInstall = Boolean(
+      input.snapshot.plugin && input.snapshot.pluginEntry.exists,
+    );
+    if (incompleteNativeInstall) {
+      failures.push(
+        'Incomplete Semantic Layer setup detected: the plugin package and config entry exist, but owner-only credentials and installation state are missing. Remove this partial native plugin install before retrying with a fresh key.',
+      );
+    } else if (input.snapshot.plugin) {
       failures.push(
         'The Semantic Layer plugin already exists without managed installation state.',
       );
-    if (input.snapshot.pluginEntry.exists)
+    } else if (input.snapshot.pluginEntry.exists) {
       failures.push(
         'The Semantic Layer plugin config entry already exists without managed installation state.',
       );
-    if (input.snapshot.secretProvider.exists)
+    }
+    if (input.snapshot.secretProvider.exists && !incompleteNativeInstall)
       failures.push(
         'The semantic_layer secret provider already exists without managed installation state.',
       );
@@ -2163,6 +2262,8 @@ function validateCommandArguments(command: string, args: string[]): void {
   const valueOptions =
     command === 'setup'
       ? new Set(['--endpoint', '--service-name', '--installation-id'])
+      : command === 'doctor'
+        ? new Set(['--gateway-url'])
       : new Set<string>();
   const flagOptions =
     command === 'setup'
@@ -2193,6 +2294,10 @@ function validateCommandArguments(command: string, args: string[]): void {
   }
   if (command === 'uninstall' && !seen.has('--container'))
     throw new TypeError('uninstall currently requires --container.');
+  if (command === 'doctor' && seen.has('--gateway-url') && !seen.has('--container'))
+    throw new TypeError('--gateway-url requires doctor --container.');
+  if (command === 'doctor' && seen.has('--gateway-url'))
+    gatewayPort(optionValue(args, '--gateway-url') ?? '');
   if (
     command === 'uninstall'
     && !seen.has('--acknowledge-external-restart')
@@ -2416,7 +2521,7 @@ export async function hiddenQuestion(
 }
 
 function helpText(): string {
-  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--container] [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor [--container]\n  semantic-layer-openclaw-setup uninstall --container --acknowledge-external-restart\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Container setup preserves Gateway settings and never restarts the container. Run doctor while the Gateway is live. Container uninstall can stop a foreground Gateway, so it requires an explicit external restart acknowledgement. Stop a service-managed Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
+  return `semantic-layer-openclaw-setup\n\nUsage:\n  semantic-layer-openclaw-setup setup [--container] [--endpoint URL] [--service-name NAME] [--installation-id ID] [--dry-run]\n  semantic-layer-openclaw-setup dry-run\n  semantic-layer-openclaw-setup doctor [--container] [--gateway-url URL]\n  semantic-layer-openclaw-setup uninstall --container --acknowledge-external-restart\n  semantic-layer-openclaw-setup status\n  semantic-layer-openclaw-setup drain\n  semantic-layer-openclaw-setup rotate-key\n  semantic-layer-openclaw-setup --help\n\nFirst setup requires the installation ID assigned to that host. Setup and rotate-key ask for an ingestion key in a hidden prompt. A setup rerun uses the stored owner-only key. Secrets are never accepted on command lines. Each managed host must use its assigned installation ID and ingestion key. Container setup preserves Gateway settings, but committing the complete plugin configuration can stop a foreground Gateway. Restart the machine from its control plane, then rerun the same setup command to confirm completion without another key. Use --gateway-url when the runtime port is not saved in OpenClaw configuration. Run doctor while the Gateway is live. Container uninstall can also stop a foreground Gateway, so it requires an explicit external restart acknowledgement. Stop a service-managed Gateway before standalone status or drain. Drain stops after 10 seconds.\n`;
 }
 
 if (

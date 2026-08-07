@@ -22,6 +22,7 @@ import {
   doctorQualificationDescription,
   generateIdentityKey,
   generateInstallationId,
+  gatewayPort,
   hiddenQuestion,
   installationIdOption,
   installationConfigFailures,
@@ -107,6 +108,18 @@ describe('client setup command contract', () => {
       ['gateway', 'status', '--deep', '--require-rpc'],
     ]);
     expect(doctorCommandPlan(true)).toEqual([['config', 'validate']]);
+  });
+
+  it('accepts only an explicit loopback WebSocket port for container doctor', () => {
+    expect(gatewayPort('ws://127.0.0.1:3001')).toBe(3001);
+    expect(gatewayPort('ws://localhost:18789')).toBe(18789);
+    expect(() => gatewayPort('wss://gateway.example.test:3001')).toThrow(
+      /loopback URL/u,
+    );
+    expect(() => gatewayPort('ws://127.0.0.1')).toThrow(/explicit port/u);
+    expect(() => gatewayPort('ws://127.0.0.1:3001/path')).toThrow(
+      /no credentials or path/u,
+    );
   });
 
   it('describes capability checking only after the full doctor succeeds', () => {
@@ -599,6 +612,9 @@ describe('client setup command contract', () => {
   it('rejects unknown options before entering setup', async () => {
     await expect(main(['setup', '--containerish'])).resolves.toBe(2);
     await expect(main(['doctor', '--containerish'])).resolves.toBe(2);
+    await expect(
+      main(['doctor', '--gateway-url', 'ws://127.0.0.1:3001']),
+    ).resolves.toBe(2);
     await expect(main(['uninstall', '--container'])).resolves.toBe(2);
   });
 
@@ -618,7 +634,13 @@ describe('client setup command contract', () => {
       executable,
       [
         '#!/usr/bin/env node',
-        "if (process.argv[2] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
+        "import { readFileSync } from 'node:fs';",
+        'const args = process.argv.slice(2);',
+        'const get = (root, path) => path.split(".").reduce((value, key) => value && typeof value === "object" ? value[key] : undefined, root);',
+        "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
+        "else if (args[0] === 'plugins' && args[1] === 'inspect') { process.stderr.write('Plugin not found: semantic-layer-openclaw\\n'); process.exitCode = 1; }",
+        "else if (args[0] === 'config' && args[1] === 'file') process.stdout.write(process.env.OPENCLAW_CONFIG_PATH + '\\n');",
+        "else if (args[0] === 'config' && args[1] === 'get') { const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); const value = get(current, args[2]); if (value === undefined) { process.stderr.write('Config path not found: ' + args[2] + '\\n'); process.exitCode = 1; } else process.stdout.write(JSON.stringify(value)); }",
         '',
       ].join('\n'),
     );
@@ -728,6 +750,7 @@ describe('client setup command contract', () => {
       'semantic-layer-openclaw',
     );
     const installCountPath = join(directory, 'plugin-install-count');
+    const liveInstallMarker = join(directory, 'live-config-touched-during-install');
     const verifiedInstallationIds: string[] = [];
     const latitudeEntry = {
       enabled: true,
@@ -741,7 +764,6 @@ describe('client setup command contract', () => {
           mode: 'remote',
           bind: 'custom',
           customBindHost: '0.0.0.0',
-          port: 3001,
         },
         plugins: { entries: { latitude: latitudeEntry } },
       },
@@ -761,7 +783,7 @@ describe('client setup command contract', () => {
         `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.4' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.4', installPath: pluginInstallPath, source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.4' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
         "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
         "else if (args[0] === 'plugins' && args[1] === 'inspect') { if (!existsSync(process.env.PLUGIN_MARKER)) { process.stderr.write('Plugin not found: semantic-layer-openclaw\\n'); process.exitCode = 1; } else process.stdout.write(JSON.stringify(report)); }",
-        "else if (args[0] === 'plugins' && args[1] === 'install') { mkdirSync(report.install.installPath, { recursive: true }); writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); }",
+        "else if (args[0] === 'plugins' && args[1] === 'install') { const credentialsPath = process.env.OPENCLAW_STATE_DIR + '/semantic-layer/credentials.json'; const statePath = process.env.OPENCLAW_STATE_DIR + '/semantic-layer/installation.json'; if (!existsSync(credentialsPath) || !existsSync(statePath)) { process.stderr.write('managed recovery state was not durable before plugin install\\n'); process.exitCode = 25; } else { mkdirSync(report.install.installPath, { recursive: true }); writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); current.plugins ??= {}; current.plugins.entries ??= {}; current.plugins.installs ??= {}; current.plugins.entries['semantic-layer-openclaw'] = { enabled: true }; current.plugins.installs['semantic-layer-openclaw'] = { source: 'npm', spec: report.install.spec, installPath: report.install.installPath, version: report.install.resolvedVersion }; if (process.env.INJECT_INSTALLER_CONFIG_CHANGE === '1') current.channels.slack.injected = true; writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(current)); if (process.env.OPENCLAW_CONFIG_PATH === process.env.ACTIVE_CONFIG_PATH) writeFileSync(process.env.LIVE_INSTALL_MARKER, 'unsafe'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); } }",
         "else if (args[0] === 'plugins' && args[1] === 'uninstall' && !args.includes('--dry-run')) { const live = JSON.parse(readFileSync(process.env.ACTIVE_CONFIG_PATH, 'utf8')); if (live.plugins?.entries?.['semantic-layer-openclaw']) { process.stderr.write('live config still enabled plugin during removal\\n'); process.exitCode = 24; } else if (process.env.FAIL_PLUGIN_UNINSTALL_BEFORE_REMOVE === '1') { process.stderr.write('injected plugin uninstall failure before removal\\n'); process.exitCode = 1; } else { if (existsSync(process.env.PLUGIN_MARKER)) unlinkSync(process.env.PLUGIN_MARKER); const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); if (current.plugins?.entries) delete current.plugins.entries['semantic-layer-openclaw']; writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(current)); if (process.env.FAIL_PLUGIN_UNINSTALL_AFTER_REMOVE === '1') { process.stderr.write('injected plugin uninstall failure after removal\\n'); process.exitCode = 1; } } }",
         "else if (args[0] === 'config' && args[1] === 'validate' && process.env.FAIL_CONFIG_VALIDATE === '1') { process.stderr.write('injected config validation failure\\n'); process.exitCode = 1; }",
         "else if (args[0] === 'security' && args[1] === 'audit') process.stdout.write(JSON.stringify({ summary: { critical: 0 } }));",
@@ -787,6 +809,8 @@ describe('client setup command contract', () => {
       failPluginUninstall: process.env.FAIL_PLUGIN_UNINSTALL_AFTER_REMOVE,
       failPluginUninstallBefore: process.env.FAIL_PLUGIN_UNINSTALL_BEFORE_REMOVE,
       activeConfig: process.env.ACTIVE_CONFIG_PATH,
+      liveInstallMarker: process.env.LIVE_INSTALL_MARKER,
+      injectInstallerChange: process.env.INJECT_INSTALLER_CONFIG_CHANGE,
       fetch: globalThis.fetch,
     };
     process.env.OPENCLAW_BIN = executable;
@@ -797,6 +821,7 @@ describe('client setup command contract', () => {
     process.env.PLUGIN_MARKER = pluginMarker;
     process.env.INSTALL_COUNT_PATH = installCountPath;
     process.env.ACTIVE_CONFIG_PATH = openClawConfigPath;
+    process.env.LIVE_INSTALL_MARKER = liveInstallMarker;
     globalThis.fetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith('/health')) return new Response('{"status":"ok"}');
@@ -834,6 +859,28 @@ describe('client setup command contract', () => {
         lstat(join(directory, 'semantic-layer', 'credentials.json')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
       process.env.FAIL_CONFIG_VALIDATE = '0';
+      process.env.INJECT_INSTALLER_CONFIG_CHANGE = '1';
+      await expect(
+        main(
+          [
+            'setup',
+            '--container',
+            '--endpoint',
+            endpoint,
+            '--service-name',
+            'customer-openclaw-vm-01',
+            '--installation-id',
+            installationId,
+          ],
+          { readSetupIngestKey: async () => 'ingest-secret' },
+        ),
+      ).resolves.toBe(1);
+      expect(await readFile(openClawConfigPath, 'utf8')).toBe(initialConfig);
+      await expect(lstat(pluginMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        lstat(join(directory, 'semantic-layer', 'credentials.json')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      process.env.INJECT_INSTALLER_CONFIG_CHANGE = '0';
       process.env.SEMANTIC_LAYER_INGEST_KEY = 'ingest-secret';
       process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'i'.repeat(64);
       await expect(
@@ -855,6 +902,11 @@ describe('client setup command contract', () => {
         directory,
         'semantic-layer',
         'credentials.json',
+      );
+      const installationStateFile = join(
+        directory,
+        'semantic-layer',
+        'installation.json',
       );
       expect(JSON.parse(await readFile(credentialPath, 'utf8'))).toEqual({
         ingestKey: 'ingest-secret',
@@ -900,15 +952,22 @@ describe('client setup command contract', () => {
       expect(verifiedInstallationIds).toEqual([
         installationId,
         installationId,
+        installationId,
       ]);
       const openClawConfig = JSON.parse(
         await readFile(openClawConfigPath, 'utf8'),
       ) as {
         gateway: Record<string, unknown>;
-        plugins: { entries: Record<string, unknown> };
+        plugins: {
+          entries: Record<string, unknown>;
+          installs: Record<string, unknown>;
+        };
       };
       expect(openClawConfig.plugins.entries.latitude).toEqual(latitudeEntry);
       expect(openClawConfig.plugins.entries).toHaveProperty(
+        'semantic-layer-openclaw',
+      );
+      expect(openClawConfig.plugins.installs).toHaveProperty(
         'semantic-layer-openclaw',
       );
       expect(openClawConfig.gateway).toEqual({
@@ -916,13 +975,13 @@ describe('client setup command contract', () => {
         mode: 'remote',
         bind: 'custom',
         customBindHost: '0.0.0.0',
-        port: 3001,
       });
-      expect(await readFile(installCountPath, 'utf8')).toBe('2');
+      expect(await readFile(installCountPath, 'utf8')).toBe('3');
+      await expect(lstat(liveInstallMarker)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(
         JSON.parse(
           await readFile(
-            join(directory, 'semantic-layer', 'installation.json'),
+            installationStateFile,
             'utf8',
           ),
         ),
@@ -935,13 +994,65 @@ describe('client setup command contract', () => {
         serviceName: 'customer-openclaw-vm-01',
         setupMode: 'container',
       });
-      await expect(main(['doctor', '--container'])).resolves.toBe(0);
+      const credentialBackup = await readFile(credentialPath);
+      const installationStateBackup = await readFile(installationStateFile);
+      await Promise.all([rm(credentialPath), rm(installationStateFile)]);
+      const incompleteError = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+      let attemptedSecretRead = false;
+      try {
+        await expect(
+          main(
+            [
+              'setup',
+              '--container',
+              '--endpoint',
+              endpoint,
+              '--service-name',
+              'customer-openclaw-vm-01',
+              '--installation-id',
+              installationId,
+            ],
+            {
+              readSetupIngestKey: async () => {
+                attemptedSecretRead = true;
+                throw new Error('sentinel-secret');
+              },
+            },
+          ),
+        ).resolves.toBe(1);
+        expect(JSON.stringify(incompleteError.mock.calls)).toContain(
+          'Incomplete Semantic Layer setup detected',
+        );
+        expect(JSON.stringify(incompleteError.mock.calls)).not.toContain(
+          'sentinel-secret',
+        );
+        expect(attemptedSecretRead).toBe(false);
+      } finally {
+        incompleteError.mockRestore();
+      }
+      await Promise.all([
+        writeFile(credentialPath, credentialBackup, { mode: 0o600 }),
+        writeFile(installationStateFile, installationStateBackup, {
+          mode: 0o600,
+        }),
+      ]);
+      await expect(
+        main([
+          'doctor',
+          '--container',
+          '--gateway-url',
+          'ws://127.0.0.1:3001',
+        ]),
+      ).resolves.toBe(0);
       expect(
         (await readdir(directory)).filter((name) =>
           name.startsWith('.semantic-layer-doctor-')),
       ).toEqual([]);
       const staleConfigFiles = [
         'config',
+        'install',
         'doctor',
         'restore',
         'rollback-config',
@@ -955,7 +1066,14 @@ describe('client setup command contract', () => {
       await Promise.all(staleConfigFiles.map((path) =>
         writeFile(path, 'stale-secret', { mode: 0o600 })));
       await writeFile(unrelatedProbe, 'keep', { mode: 0o600 });
-      await expect(main(['doctor', '--container'])).resolves.toBe(0);
+      await expect(
+        main([
+          'doctor',
+          '--container',
+          '--gateway-url',
+          'ws://127.0.0.1:3001',
+        ]),
+      ).resolves.toBe(0);
       expect(
         (await readdir(directory)).filter((name) =>
           /^\.semantic-layer-doctor-\d+-\d+\.json$/u.test(name)),
@@ -977,16 +1095,15 @@ describe('client setup command contract', () => {
             '--installation-id',
             installationId,
           ],
-          { readSetupIngestKey: async () => 'ingest-secret' },
+          {
+            readSetupIngestKey: async () => {
+              throw new Error('setup rerun must use stored credentials');
+            },
+          },
         ),
       ).resolves.toBe(0);
-      expect(await readFile(installCountPath, 'utf8')).toBe('2');
+      expect(await readFile(installCountPath, 'utf8')).toBe('3');
 
-      const installationStateFile = join(
-        directory,
-        'semantic-layer',
-        'installation.json',
-      );
       await rm(installationStateFile);
       const configBeforeMissingStateUninstall = await readFile(openClawConfigPath);
       await expect(
@@ -1033,7 +1150,7 @@ describe('client setup command contract', () => {
         ),
       ).resolves.toBe(0);
       expect((await lstat(credentialPath)).mode & 0o077).toBe(0);
-      expect(await readFile(installCountPath, 'utf8')).toBe('2');
+      expect(await readFile(installCountPath, 'utf8')).toBe('3');
 
       const localTrace = join(
         directory,
@@ -1140,6 +1257,11 @@ describe('client setup command contract', () => {
         previous.failPluginUninstallBefore,
       );
       restoreEnvironment('ACTIVE_CONFIG_PATH', previous.activeConfig);
+      restoreEnvironment('LIVE_INSTALL_MARKER', previous.liveInstallMarker);
+      restoreEnvironment(
+        'INJECT_INSTALLER_CONFIG_CHANGE',
+        previous.injectInstallerChange,
+      );
       globalThis.fetch = previous.fetch;
     }
   }, 15_000);
