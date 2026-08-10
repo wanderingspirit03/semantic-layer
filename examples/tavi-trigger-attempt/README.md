@@ -38,10 +38,10 @@ Do not put the ingest key in source code, a task payload, a command, or a log.
 Read each secret inside the worker and pass it directly to the trusted tenant
 lookup.
 
-Use `tavi-trigger-prod-l-lindh` as the pilot service name. The Trigger
-installation ID is separate from every OpenClaw VM installation ID. One Tavi
-customer normally has one Trigger installation and one installation for each
-OpenClaw VM.
+Use a stable service name such as `tavi-trigger-prod-<customer-slug>`. The
+Trigger installation ID is separate from every OpenClaw VM installation ID.
+One Tavi customer normally has one Trigger installation and one installation
+for each OpenClaw VM.
 
 ## Tenant lookup
 
@@ -55,11 +55,10 @@ Pass `null` when the tenant is not enrolled. The wrapper checks for `null`
 before creating any file, then calls the task directly and reports
 `not_captured`.
 
-The shared wrapper has no Lindh branch. During the pilot, Tavi's resolver
-returns the Lindh configuration only when the server supplied tenant ID is
-`d3f1382c-814a-44b5-8948-b5168993e15d`. It returns `null` for every other
-tenant. Later enrollment adds another trusted configuration entry. It does not
-change this wrapper.
+The shared wrapper has no customer branch. During a pilot, Tavi's resolver
+returns configuration only when the server supplied tenant ID is enrolled. It
+returns `null` for every other tenant. Later enrollment adds another trusted
+configuration entry. It does not change this wrapper.
 
 Use one stable identity key for all Trigger attempts that belong to the same
 customer. The same key is also required on any OpenClaw installation that must
@@ -230,11 +229,11 @@ received status, Arcus received status, and the safe Arcus delivery status.
 Do not issue a customer key until the pinned packages have been published and
 installed from the public registry in a clean Node 22.16 environment. Then use
 the same package versions and Node runtime in production. Store the four
-secrets in Trigger production secrets. Enable only the Lindh resolver entry.
+secrets in Trigger production secrets. Enable only the pilot resolver entry.
 Run one private verification research and confirm both observability services
 with safe identifiers only.
 
-To roll back, disable the Lindh resolver entry or deploy the prior Tavi task
+To roll back, disable the pilot resolver entry or deploy the prior Tavi task
 version. Leave the Latitude provider and exporter unchanged. Revoke the Trigger
 ingestion key. Revert the Node runtime only through a tested deployment
 rollback. Keep any bundles that the cloud already acknowledged.
