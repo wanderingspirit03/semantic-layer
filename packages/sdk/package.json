@@ -1,6 +1,6 @@
 {
   "name": "semantic-layer-capture",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "type": "module",
   "description": "Local semantic trace capture SDK for agent systems",
   "license": "MIT",

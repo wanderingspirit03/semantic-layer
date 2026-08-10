@@ -1,8 +1,8 @@
 # Tavi Trigger attempt capture
 
 The example wraps one Trigger task attempt. It uses
-`semantic-layer-capture@0.2.0-beta.1` and
-`semantic-layer-cloud@0.1.0-pilot.2` without adding another published package.
+`semantic-layer-capture@0.2.0-beta.2` and
+`semantic-layer-cloud@0.1.0-pilot.4` without adding another published package.
 Its context mapping is checked against `@trigger.dev/sdk@4.4.4`.
 
 Use Node 22 for the Trigger task. Trigger uses Node 21 by default, while both
@@ -21,8 +21,8 @@ Test the complete deployment in staging before production.
 Install the exact package pair in Tavi's Trigger task package:
 
 ```sh
-pnpm add semantic-layer-capture@0.2.0-beta.1 \
-  semantic-layer-cloud@0.1.0-pilot.2
+pnpm add semantic-layer-capture@0.2.0-beta.2 \
+  semantic-layer-cloud@0.1.0-pilot.4
 ```
 
 ## Required secrets

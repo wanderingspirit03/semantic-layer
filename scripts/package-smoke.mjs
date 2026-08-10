@@ -117,12 +117,12 @@ try {
     {
       name: 'semantic-layer-capture',
       directory: 'packages/sdk',
-      version: '0.2.0-beta.1',
+      version: '0.2.0-beta.2',
     },
     {
       name: 'semantic-layer-cloud',
       directory: 'packages/cloud',
-      version: '0.1.0-pilot.3',
+      version: '0.1.0-pilot.4',
       bin: 'semantic-layer-cloud',
     },
     {

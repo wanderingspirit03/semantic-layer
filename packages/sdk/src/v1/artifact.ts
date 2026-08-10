@@ -15,7 +15,7 @@ import { assertNoSymbolicLinkComponents, secureOwnerOnly } from './permissions.j
 import type { OwnershipManifest } from './source-ownership.js';
 
 const SDK_NAME = 'semantic-layer-capture';
-const SDK_VERSION = '0.2.0-beta.1';
+const SDK_VERSION = '0.2.0-beta.2';
 const CONTROL_RESERVE_BYTES = 64 * 1024;
 const PROJECTION_OVERHEAD_BYTES = 2 * 1024;
 
