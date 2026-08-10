@@ -64,7 +64,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: pnpm install --filter './packages/**' --frozen-lockfile
       - name: Build all TypeScript packages
-        run: pnpm -r --filter './packages/**' --if-present run build
+        run: pnpm build:typescript
       - name: Typecheck all TypeScript packages and capture compatibility suites
         run: |
           pnpm -r --filter './packages/**' --if-present run typecheck
@@ -90,6 +90,39 @@ jobs:
           pnpm --filter semantic-layer-openclaw-setup run test
       - name: Run local capture-to-ingest E2E
         run: node scripts/cloud-integration.mjs e2e
+
+  tavi-trigger-compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22.16.0", "24"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the local capture and cloud packages
+        run: |
+          pnpm --filter semantic-layer-capture run build
+          pnpm --filter semantic-layer-cloud run build
+      - name: Test the exact Tavi OpenTelemetry versions
+        run: |
+          pnpm install --dir compat/otel-1.25 --ignore-workspace --frozen-lockfile
+          pnpm --dir compat/otel-1.25 run test
+      - name: Test the Trigger 4.4.4 attempt integration on its production runtime
+        if: matrix.node-version == '22.16.0'
+        run: |
+          pnpm install --dir examples/tavi-trigger-attempt --ignore-workspace --frozen-lockfile
+          pnpm --dir examples/tavi-trigger-attempt run test
+          pnpm --dir examples/tavi-trigger-attempt run typecheck
 
   python-compatibility:
     strategy:

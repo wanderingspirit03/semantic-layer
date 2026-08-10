@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import re
 from collections.abc import Iterator, Mapping
@@ -10,9 +11,268 @@ from typing import Any
 
 import pytest
 
+from semantic_layer import CaptureSource, initialize, reset_capture_for_tests
 from semantic_layer import capture_v1 as capture_module
-from semantic_layer import initialize, reset_capture_for_tests
 from semantic_layer.validation import validate_artifact
+
+
+def _protected_task(identity_key: str, task_id: str) -> str:
+    digest = hmac.new(identity_key.encode(), digestmod=hashlib.sha256)
+    digest.update(b"task\0")
+    digest.update(task_id.encode())
+    return f"task_{digest.hexdigest()}"
+
+
+def _protected_execution(identity_key: str, system: str, run_id: str) -> str:
+    digest = hmac.new(identity_key.encode(), digestmod=hashlib.sha256)
+    digest.update(system.encode())
+    digest.update(b"\0run\0")
+    digest.update(run_id.encode())
+    return f"exec_{digest.hexdigest()}"
+
+
+def test_run_correlation_joins_two_sealed_bundles_without_raw_ids(tmp_path: Path) -> None:
+    identity_key = "fixture-run-correlation-key-32-bytes"
+    task_id = "tenant-task-private"
+    root_run_id = "trigger-root-private"
+    child_run_id = "trigger-child-private"
+
+    first = initialize(
+        output=tmp_path,
+        service_name="manual-run-correlation",
+        identity_key=identity_key,
+    )
+    with first.observe(
+        "ralph-loop",
+        correlation={
+            "task_id": task_id,
+            "execution": {
+                "system": "trigger.dev",
+                "run_id": root_run_id,
+                "root_run_id": root_run_id,
+                "attempt": 0,
+            },
+        },
+    ):
+        pass
+    first_path = Path(first.shutdown().artifact_path)
+    reset_capture_for_tests()
+
+    second = initialize(
+        output=tmp_path,
+        service_name="manual-run-correlation",
+        identity_key=identity_key,
+    )
+    with second.observe(
+        "search-loop",
+        correlation={
+            "task_id": task_id,
+            "execution": {
+                "system": "trigger.dev",
+                "run_id": child_run_id,
+                "parent_run_id": root_run_id,
+                "root_run_id": root_run_id,
+                "attempt": 1,
+            },
+        },
+    ):
+        pass
+    second_path = Path(second.shutdown().artifact_path)
+
+    first_text = (first_path / "trace.jsonl").read_text()
+    second_text = (second_path / "trace.jsonl").read_text()
+    first_start = next(
+        row for row in map(json.loads, first_text.splitlines()) if row["kind"] == "run.start"
+    )
+    second_start = next(
+        row for row in map(json.loads, second_text.splitlines()) if row["kind"] == "run.start"
+    )
+    first_correlation = first_start["data"]["correlation"]
+    second_correlation = second_start["data"]["correlation"]
+    assert first_correlation["task_id"] == second_correlation["task_id"]
+    assert first_correlation["task_id"] == _protected_task(identity_key, task_id)
+    protected_root = _protected_execution(identity_key, "trigger.dev", root_run_id)
+    assert first_correlation["execution"]["run_id"] == protected_root
+    assert second_correlation["execution"]["parent_run_id"] == protected_root
+    assert second_correlation["execution"]["root_run_id"] == protected_root
+    assert second_correlation["execution"]["attempt"] == 1
+    for raw in (task_id, root_run_id, child_run_id):
+        assert raw not in first_text
+        assert raw not in second_text
+
+
+def test_missing_required_run_correlation_is_fail_open_and_explicit(tmp_path: Path) -> None:
+    capture = initialize(
+        output=tmp_path,
+        service_name="manual-run-correlation-gap",
+        identity_key="fixture-run-correlation-gap-key",
+    )
+    customer_result = "customer-result"
+    with capture.observe(
+        "ralph-loop",
+        correlation={
+            "task_id": "",
+            "execution": {"system": "trigger.dev", "run_id": ""},
+        },
+    ):
+        observed_result = customer_result
+
+    artifact = Path(capture.shutdown().artifact_path)
+    rows = [json.loads(line) for line in (artifact / "trace.jsonl").read_text().splitlines()]
+    start = next(row for row in rows if row["kind"] == "run.start")
+    loss = next(
+        row
+        for row in rows
+        if row["kind"] == "loss"
+        and row["data"]["reason"] == "missing_correlation_identity"
+    )
+    assert observed_result == customer_result
+    assert "correlation" not in start["data"]
+    assert loss["data"]["count"] == 2
+    assert loss["data"]["path"] == "/run_correlation"
+
+
+@pytest.mark.parametrize("execution", [None, "not-an-execution-mapping"])
+def test_missing_execution_mapping_names_current_identity_gap(
+    tmp_path: Path,
+    execution: object,
+) -> None:
+    capture = initialize(
+        output=tmp_path,
+        service_name="manual-missing-execution",
+        identity_key="fixture-missing-execution-key",
+    )
+    with capture.observe(
+        "ralph-loop",
+        correlation={
+            "task_id": "research-task-private",
+            "execution": execution,
+        },
+    ):
+        pass
+
+    artifact = Path(capture.shutdown().artifact_path)
+    rows = [json.loads(line) for line in (artifact / "trace.jsonl").read_text().splitlines()]
+    losses = [
+        row
+        for row in rows
+        if row["kind"] == "loss"
+        and row["data"]["reason"] == "missing_correlation_identity"
+    ]
+    assert len(losses) == 1
+    assert losses[0]["data"]["count"] == 1
+
+
+def test_invalid_optional_run_relation_does_not_remove_valid_correlation(
+    tmp_path: Path,
+) -> None:
+    capture = initialize(
+        output=tmp_path,
+        service_name="manual-optional-run-correlation-gap",
+        identity_key="fixture-optional-run-correlation-gap-key",
+    )
+
+    with capture.observe(
+        "search-loop",
+        correlation={
+            "task_id": "research-task-private",
+            "execution": {
+                "system": "trigger.dev",
+                "run_id": "trigger-child-private",
+                "parent_run_id": "",
+                "root_run_id": "trigger-root-private",
+                "attempt": 1,
+            },
+        },
+    ):
+        pass
+
+    closed = capture.shutdown()
+    artifact = Path(closed.artifact_path)
+    rows = [json.loads(line) for line in (artifact / "trace.jsonl").read_text().splitlines()]
+    start = next(row for row in rows if row["kind"] == "run.start")
+    execution = start["data"]["correlation"]["execution"]
+    assert execution["system"] == "trigger.dev"
+    assert execution["attempt"] == 1
+    assert "parent_run_id" not in execution
+    assert "root_run_id" in execution
+    assert any(
+        row["kind"] == "loss"
+        and row["data"]["reason"] == "serialization_failure"
+        for row in rows
+    )
+
+
+def test_custom_source_open_trace_accepts_run_correlation(tmp_path: Path) -> None:
+    class CorrelatedSource(CaptureSource):
+        metadata = {
+            "name": "correlated-source",
+            "seam": "fixture.callback",
+            "identity_domain": "fixture.run",
+            "coverage": [],
+        }
+
+        def install(self, sink: Any) -> Any:
+            opened = sink.open_trace(
+                {
+                    "name": "search-loop",
+                    "semantic": {"type": "workflow.run", "name": "search-loop"},
+                    "correlation": {
+                        "task_id": "source-task-private",
+                        "execution": {
+                            "system": "trigger.dev",
+                            "run_id": "source-run-private",
+                            "attempt": 0,
+                        },
+                    },
+                }
+            )
+            assert opened.accepted and opened.identity is not None
+            sink.record(
+                {
+                    "kind": "lifecycle",
+                    "phase": "end",
+                    "name": "search-loop",
+                    "trace": opened.identity,
+                    "parent_record_id": opened.record_id,
+                    "native": None,
+                    "semantic": {"type": "workflow.run", "status": "succeeded"},
+                }
+            )
+
+            class Lifecycle:
+                def deactivate(self) -> None:
+                    return None
+
+                def drain(self) -> None:
+                    return None
+
+            return Lifecycle()
+
+    identity_key = "fixture-source-correlation-key"
+    capture = initialize(
+        output=tmp_path,
+        service_name="source-run-correlation",
+        identity_key=identity_key,
+    )
+    capture.install_source(CorrelatedSource())
+    artifact = Path(capture.shutdown().artifact_path)
+    trace_text = (artifact / "trace.jsonl").read_text()
+    start = next(
+        row for row in map(json.loads, trace_text.splitlines()) if row["kind"] == "run.start"
+    )
+    assert start["data"]["correlation"] == {
+        "task_id": _protected_task(identity_key, "source-task-private"),
+        "execution": {
+            "system": "trigger.dev",
+            "run_id": _protected_execution(
+                identity_key, "trigger.dev", "source-run-private"
+            ),
+            "attempt": 0,
+        },
+    }
+    assert "source-task-private" not in trace_text
+    assert "source-run-private" not in trace_text
 
 
 def test_continuation_identities_join_two_sealed_bundles(tmp_path: Path) -> None:

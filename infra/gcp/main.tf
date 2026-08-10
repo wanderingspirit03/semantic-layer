@@ -185,6 +185,19 @@ resource "google_storage_bucket_iam_member" "operators" {
   member   = each.value
 }
 
+resource "google_storage_managed_folder" "completed_evidence" {
+  bucket = google_storage_bucket.bundles.name
+  name   = "tenants/"
+}
+
+resource "google_storage_managed_folder_iam_member" "trace_readers" {
+  for_each       = var.trace_reader_members
+  bucket         = google_storage_bucket.bundles.name
+  managed_folder = google_storage_managed_folder.completed_evidence.name
+  role           = google_project_iam_custom_role.operator_objects.name
+  member         = each.value
+}
+
 resource "google_storage_bucket_iam_member" "operator_delete" {
   for_each = var.bundle_operator_members
   bucket   = google_storage_bucket.bundles.name

@@ -20,6 +20,7 @@ type OTelContext = unknown;
 type OTelSpan = {
   spanContext(): { traceId: string; spanId: string; traceFlags?: number; traceState?: unknown };
   parentSpanContext?: { spanId?: string; traceId?: string };
+  parentSpanId?: string;
   name?: string;
   attributes?: Record<string, unknown>;
   events?: unknown[];
@@ -27,6 +28,7 @@ type OTelSpan = {
   status?: unknown;
   resource?: { attributes?: Record<string, unknown> };
   instrumentationScope?: unknown;
+  instrumentationLibrary?: unknown;
   droppedAttributesCount?: number;
   droppedEventsCount?: number;
   droppedLinksCount?: number;
@@ -154,7 +156,7 @@ export function createOpenTelemetrySource(options: OTelOptions = {}): OpenTeleme
         });
         return;
       }
-      const parentSpanId = span.parentSpanContext?.spanId;
+      const parentSpanId = span.parentSpanContext?.spanId ?? span.parentSpanId;
       const parent = parentSpanId ? spans.get(spanKey(context.traceId, parentSpanId)) : undefined;
       const toolCallId = exactToolCallId(span.attributes);
       const kind = classified === 'agent' ? 'agent-scope' : classified;
@@ -591,15 +593,17 @@ function spanSnapshot(span: OTelSpan): Record<string, unknown> {
     span_id: context.spanId,
     trace_flags: context.traceFlags ?? null,
     trace_state: context.traceState ?? null,
-    parent_span_context: span.parentSpanContext
-      ? spanContextSnapshot(span.parentSpanContext)
+    parent_span_context: span.parentSpanContext ?? span.parentSpanId
+      ? spanContextSnapshot(span.parentSpanContext ?? { spanId: span.parentSpanId })
       : null,
     attributes: span.attributes ?? {},
     events: span.events ?? [],
     links: span.links ?? [],
     status: span.status ?? null,
     resource: span.resource?.attributes ?? {},
-    instrumentation_scope: instrumentationScopeSnapshot(span.instrumentationScope),
+    instrumentation_scope: instrumentationScopeSnapshot(
+      span.instrumentationScope ?? span.instrumentationLibrary,
+    ),
     dropped_attributes_count: span.droppedAttributesCount ?? 0,
     dropped_events_count: span.droppedEventsCount ?? 0,
     dropped_links_count: span.droppedLinksCount ?? 0,
@@ -809,10 +813,11 @@ function jsonAttribute(
 }
 
 function instrumentationSchemaUrl(span: OTelSpan): string | undefined {
-  if (!span.instrumentationScope || typeof span.instrumentationScope !== 'object') {
+  const scope = span.instrumentationScope ?? span.instrumentationLibrary;
+  if (!scope || typeof scope !== 'object') {
     return undefined;
   }
-  const value = (span.instrumentationScope as { schemaUrl?: unknown }).schemaUrl;
+  const value = (scope as { schemaUrl?: unknown }).schemaUrl;
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
@@ -1128,8 +1133,9 @@ function normalizedSpanError(span: OTelSpan): Record<string, unknown> {
   const spanAttributes = span.attributes ?? {};
   const observedType = stringValue(spanAttributes['error.type'])
     ?? stringValue(exceptionAttributes['exception.type']);
+  const statusMessage = stringValue(status.message) ?? stringValue(status.description);
   const observedMessage = stringValue(exceptionAttributes['exception.message'])
-    ?? stringValue(status.description);
+    ?? statusMessage;
   const stacktrace = stringValue(exceptionAttributes['exception.stacktrace']);
   return {
     type: normalizedErrorType(observedType ?? 'otel_span_error'),
@@ -1137,8 +1143,8 @@ function normalizedSpanError(span: OTelSpan): Record<string, unknown> {
     recoverable: false,
     details: {
       status_code: status.code === 2 ? 2 : null,
-      ...(stringValue(status.description)
-        ? { status_description: stringValue(status.description) }
+      ...(statusMessage
+        ? { status_description: statusMessage }
         : {}),
       ...(observedType ? { exception_type: observedType } : {}),
       ...(stacktrace ? { exception_stacktrace: stacktrace } : {}),

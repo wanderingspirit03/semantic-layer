@@ -13,7 +13,8 @@ import {
 import type {
   AdmissionReceipt, CaptureHandle, CaptureSource, CaptureStatus, CoverageKey, InitializeOptions,
   ObservationOptions, ObservationScope, OpenTraceRecord, OpenTraceReceipt, SourceLifecycle,
-  SourceMetadata, SourceRecord, SourceSink, ToolObservationOptions, TraceIdentity,
+  LossReason, RunCorrelationInput, SemanticCaptureEventV1, SourceMetadata, SourceRecord, SourceSink,
+  ToolObservationOptions, TraceIdentity,
 } from './types.js';
 
 const MAX_TURN_ORDER_ENTRIES = 1024;
@@ -31,7 +32,13 @@ type TurnIdentity = {
   turn_index?: number;
   previous_turn_id?: string;
 };
-type CaptureInputFault = { field: string; error: unknown; affectedPath?: string };
+type ProtectedRunCorrelation = NonNullable<SemanticCaptureEventV1['run_correlation']>;
+type CaptureInputFault = {
+  field: string;
+  error: unknown;
+  affectedPath?: string;
+  lossReason?: LossReason;
+};
 type ObservationSnapshot = { options: ObservationOptions; faults: CaptureInputFault[] };
 type OpenTraceSnapshot = { input: OpenTraceRecord; faults: CaptureInputFault[] };
 type SourceRecordSnapshot = {
@@ -208,6 +215,7 @@ class CaptureRuntime {
         name,
         input: snapshot.options.input ?? null,
       },
+      runCorrelation: this.protectRunCorrelation(snapshot.options.correlation),
       traceparent: parentContext.traceparent,
     }, identity);
     this.recordInputFaults(snapshot.faults, trace, identity, start.accepted ? start.recordId : undefined, parentContext.traceparent);
@@ -237,6 +245,7 @@ class CaptureRuntime {
       return result as Awaited<T>;
     } catch (error) {
       active = false;
+      const cancelled = cancellationWasObserved(snapshot.options.cancellationSignal);
       const sourceErrors = this.sourceErrorIdentities.get(trace.traceId);
       const sourceOwnsError = isErrorIdentity(error) && sourceErrors?.has(error) === true;
       this.sourceErrorIdentities.delete(trace.traceId);
@@ -249,8 +258,8 @@ class CaptureRuntime {
         }, identity, { allowDuringClosing: true });
       }
       this.record(manualMetadata, {
-        kind: 'lifecycle', phase: 'error', name, trace, native: null,
-        semantic: { type: 'agent.run', status: 'failed' },
+        kind: 'lifecycle', phase: cancelled ? 'cancelled' : 'error', name, trace, native: null,
+        semantic: { type: 'agent.run', status: cancelled ? 'cancelled' : 'failed' },
         ...(start.accepted ? { parentRecordId: start.recordId } : {}),
         traceparent: parentContext.traceparent,
       }, identity, { allowDuringClosing: true });
@@ -390,6 +399,7 @@ class CaptureRuntime {
           kind: 'lifecycle', phase: 'start', name: captured.name, trace: identity,
           nativeIdentity: captured.nativeIdentity, native: captured.native ?? null,
           semantic: captured.semantic,
+          runCorrelation: this.protectRunCorrelation(captured.correlation),
           contractCoverage: coverage,
           ...(ambient?.parentRecordId ? { parentRecordId: ambient.parentRecordId } : {}),
           traceparent: parentContext.traceparent,
@@ -691,7 +701,11 @@ class CaptureRuntime {
 
   private record(
     metadata: SourceMetadata,
-    input: SourceRecord & { traceparent?: string; contractCoverage?: CoverageIdentity },
+    input: SourceRecord & {
+      traceparent?: string;
+      contractCoverage?: CoverageIdentity;
+      runCorrelation?: ProtectedRunCorrelation;
+    },
     identities: TurnIdentity = {},
     admission: RecordAdmissionOptions = {},
   ): AdmissionReceipt {
@@ -708,6 +722,7 @@ class CaptureRuntime {
     const receipt = this.artifact.admit({
       trace_id: input.trace.traceId,
       ...identities,
+      ...(input.runCorrelation ? { run_correlation: input.runCorrelation } : {}),
       source,
       ...(input.contractCoverage ? { coverage: {
         operation: input.contractCoverage.operation,
@@ -790,12 +805,27 @@ class CaptureRuntime {
       traceparent,
     }, identities);
     const settlements = [gap.settled];
+    const grouped = new Map<LossReason, number>();
     for (const fault of faults) {
+      if (fault.lossReason) {
+        grouped.set(fault.lossReason, (grouped.get(fault.lossReason) ?? 0) + 1);
+        continue;
+      }
       settlements.push(this.artifact.recordLoss(
         'serialization_failure',
         trace.traceId,
         gap.accepted ? gap.recordId : affectedRecordId,
         fault.affectedPath ?? `/capture_input/${fault.field}`,
+      ).settled);
+    }
+    for (const [reason, count] of grouped) {
+      settlements.push(this.artifact.recordLoss(
+        reason,
+        trace.traceId,
+        gap.accepted ? gap.recordId : affectedRecordId,
+        reason === 'missing_correlation_identity' ? '/run_correlation' : undefined,
+        undefined,
+        count,
       ).settled);
     }
     return Promise.all(settlements).then(() => undefined);
@@ -904,6 +934,33 @@ class CaptureRuntime {
     }
     return `${prefix}_${createHmac('sha256', this.identityKey).update(value).digest('hex')}`;
   }
+
+  private protectRunCorrelation(
+    value: RunCorrelationInput | undefined,
+  ): ProtectedRunCorrelation | undefined {
+    if (!value) return undefined;
+    const executionIdentity = (runId: string): string => `exec_${createHmac(
+      'sha256',
+      this.identityKey,
+    ).update(value.execution.system).update('\0run\0').update(runId).digest('hex')}`;
+    return {
+      task_id: `task_${createHmac('sha256', this.identityKey)
+        .update('task\0').update(value.taskId).digest('hex')}`,
+      execution: {
+        system: value.execution.system,
+        run_id: executionIdentity(value.execution.runId),
+        ...(value.execution.parentRunId
+          ? { parent_run_id: executionIdentity(value.execution.parentRunId) }
+          : {}),
+        ...(value.execution.rootRunId
+          ? { root_run_id: executionIdentity(value.execution.rootRunId) }
+          : {}),
+        ...(value.execution.attempt === undefined
+          ? {}
+          : { attempt: value.execution.attempt }),
+      },
+    };
+  }
 }
 
 const manualMetadata: SourceMetadata = {
@@ -995,6 +1052,17 @@ function snapshotObservationOptions(input: unknown): ObservationSnapshot {
   }
   const parentContext = readCaptureValue(input, 'parentContext', faults);
   if (parentContext.ok) options.parentContext = parentContext.value as ObservationOptions['parentContext'];
+  const cancellationSignal = readCaptureValue(input, 'cancellationSignal', faults);
+  if (cancellationSignal.ok && cancellationSignal.value !== undefined) {
+    const aborted = readCaptureValue(cancellationSignal.value, 'aborted', faults);
+    if (aborted.ok && typeof aborted.value === 'boolean') {
+      options.cancellationSignal = cancellationSignal.value as Readonly<{ aborted: boolean }>;
+    } else if (aborted.ok) {
+      faults.push(invalidInput('cancellationSignal.aborted', 'must be a boolean'));
+    }
+  }
+  const correlation = snapshotRunCorrelation(input, faults);
+  if (correlation) options.correlation = correlation;
   return { options, faults };
 }
 
@@ -1165,16 +1233,151 @@ function exactTraceIdentityShape(input: unknown): boolean {
 }
 
 function snapshotObservationIdentities(input: unknown): {
-  options: Pick<ObservationOptions, 'conversationId' | 'turnId' | 'turnIndex' | 'previousTurnId'>;
+  options: Pick<
+    ObservationOptions,
+    'conversationId' | 'turnId' | 'turnIndex' | 'previousTurnId' | 'correlation'
+  >;
   faults: CaptureInputFault[];
 } {
   const faults: CaptureInputFault[] = [];
-  const options: Pick<ObservationOptions, 'conversationId' | 'turnId' | 'turnIndex' | 'previousTurnId'> = {};
+  const options: Pick<
+    ObservationOptions,
+    'conversationId' | 'turnId' | 'turnIndex' | 'previousTurnId' | 'correlation'
+  > = {};
   assignOptionalString(options, 'conversationId', readCaptureValue(input, 'conversationId', faults), faults);
   assignOptionalString(options, 'turnId', readCaptureValue(input, 'turnId', faults), faults);
   assignTurnIndex(options, readCaptureValue(input, 'turnIndex', faults), faults);
   assignOptionalString(options, 'previousTurnId', readCaptureValue(input, 'previousTurnId', faults), faults);
+  const correlation = snapshotRunCorrelation(input, faults);
+  if (correlation) options.correlation = correlation;
   return { options, faults };
+}
+
+function snapshotRunCorrelation(
+  input: unknown,
+  faults: CaptureInputFault[],
+): RunCorrelationInput | undefined {
+  const observed = readCaptureValue(input, 'correlation', faults);
+  if (!observed.ok || observed.value === undefined) return undefined;
+  if (!observed.value || typeof observed.value !== 'object' || Array.isArray(observed.value)) {
+    faults.push(invalidInput('correlation', 'must be an object'));
+    return undefined;
+  }
+  const taskId = readCaptureValue(observed.value, 'taskId', faults);
+  const execution = readCaptureValue(observed.value, 'execution', faults);
+  const taskIdValue = taskId.ok && validCorrelationText(taskId.value)
+    ? taskId.value
+    : undefined;
+  if (!taskIdValue) {
+    faults.push(invalidInput(
+      'correlation.taskId',
+      'must be a non-empty string of at most 512 characters',
+      undefined,
+      'missing_correlation_identity',
+    ));
+  }
+  if (!execution.ok || !execution.value || typeof execution.value !== 'object'
+    || Array.isArray(execution.value)) {
+    faults.push(invalidInput(
+      'correlation.execution',
+      'must be an object',
+      undefined,
+      'missing_correlation_identity',
+    ));
+    return undefined;
+  }
+  const system = readCaptureValue(execution.value, 'system', faults);
+  const runId = readCaptureValue(execution.value, 'runId', faults);
+  const parentRunId = readCaptureValue(execution.value, 'parentRunId', faults);
+  const rootRunId = readCaptureValue(execution.value, 'rootRunId', faults);
+  const attempt = readCaptureValue(execution.value, 'attempt', faults);
+  const systemValue = system.ok && typeof system.value === 'string'
+    && /^[a-z][a-z0-9._:-]{2,127}$/u.test(system.value)
+    ? system.value
+    : undefined;
+  if (!systemValue) {
+    faults.push(invalidInput(
+      'correlation.execution.system',
+      'must be a lowercase identifier of 3 to 128 characters',
+    ));
+  }
+  const runIdValue = runId.ok && validCorrelationText(runId.value)
+    ? runId.value
+    : undefined;
+  if (!runIdValue) {
+    faults.push(invalidInput(
+      'correlation.execution.runId',
+      'must be a non-empty string of at most 512 characters',
+      undefined,
+      'missing_correlation_identity',
+    ));
+  }
+  for (const [field, value] of [
+    ['parentRunId', parentRunId],
+    ['rootRunId', rootRunId],
+  ] as const) {
+    if (value.ok && value.value !== undefined && !validCorrelationText(value.value)) {
+      faults.push(invalidInput(
+        `correlation.execution.${field}`,
+        'must be a non-empty string of at most 512 characters',
+      ));
+    }
+  }
+  const parentRunIdValue = parentRunId.ok && validCorrelationText(parentRunId.value)
+    ? parentRunId.value
+    : undefined;
+  const rootRunIdValue = rootRunId.ok && validCorrelationText(rootRunId.value)
+    ? rootRunId.value
+    : undefined;
+  const attemptValue = attempt.ok && Number.isSafeInteger(attempt.value)
+    && Number(attempt.value) >= 0
+    ? attempt.value as number
+    : undefined;
+  if (attempt.ok && attempt.value !== undefined && (
+    !Number.isSafeInteger(attempt.value) || Number(attempt.value) < 0
+  )) {
+    faults.push(invalidInput(
+      'correlation.execution.attempt',
+      'must be a non-negative safe integer',
+    ));
+  }
+  if (!taskIdValue
+    || !systemValue
+    || !runIdValue) {
+    return undefined;
+  }
+  return {
+    taskId: taskIdValue,
+    execution: {
+      system: systemValue,
+      runId: runIdValue,
+      ...(parentRunIdValue
+        ? { parentRunId: parentRunIdValue }
+        : {}),
+      ...(rootRunIdValue
+        ? { rootRunId: rootRunIdValue }
+        : {}),
+      ...(attemptValue !== undefined
+        ? { attempt: attemptValue }
+        : {}),
+    },
+  };
+}
+
+function validCorrelationText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+    && codePointLength(value) <= 512;
+}
+
+function cancellationWasObserved(
+  signal: Readonly<{ aborted: boolean }> | undefined,
+): boolean {
+  if (!signal) return false;
+  try {
+    return signal.aborted === true;
+  } catch {
+    return false;
+  }
 }
 
 function resolvedSnapshotParent(snapshot: ObservationSnapshot, inherited?: string): ResolvedParentContext {
@@ -1243,8 +1446,18 @@ function assignTurnIndex<T extends { turnIndex?: number }>(
   else faults.push(invalidInput('turnIndex', 'must be a non-negative safe integer'));
 }
 
-function invalidInput(field: string, requirement: string, affectedPath?: string): CaptureInputFault {
-  return { field, error: new TypeError(`${field} ${requirement}`), ...(affectedPath ? { affectedPath } : {}) };
+function invalidInput(
+  field: string,
+  requirement: string,
+  affectedPath?: string,
+  lossReason?: LossReason,
+): CaptureInputFault {
+  return {
+    field,
+    error: new TypeError(`${field} ${requirement}`),
+    ...(affectedPath ? { affectedPath } : {}),
+    ...(lossReason ? { lossReason } : {}),
+  };
 }
 
 function codePointLength(value: string): number { return [...value].length; }

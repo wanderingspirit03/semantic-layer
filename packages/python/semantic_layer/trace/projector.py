@@ -1122,6 +1122,9 @@ class SemanticProjector:
                 ):
                     if key in capture:
                         data[key] = capture[key]
+                run_correlation = self._run_correlation(capture.get("run_correlation"))
+                if run_correlation is not None:
+                    data["correlation"] = run_correlation
                 continuation, unresolved_continuation = self._continuation(capture)
                 record = self._record(
                     capture,
@@ -2101,6 +2104,35 @@ class SemanticProjector:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
         return None
+
+    @classmethod
+    def _run_correlation(cls, value: object) -> dict[str, Any] | None:
+        if not isinstance(value, Mapping):
+            return None
+        task_id = cls._safe_id(value.get("task_id"))
+        execution = value.get("execution")
+        if task_id is None or not isinstance(execution, Mapping):
+            return None
+        system = execution.get("system")
+        run_id = cls._safe_id(execution.get("run_id"))
+        if (
+            not isinstance(system, str)
+            or re.fullmatch(r"[a-z][a-z0-9._:-]{2,127}", system) is None
+            or run_id is None
+        ):
+            return None
+        projected_execution: dict[str, Any] = {
+            "system": system,
+            "run_id": run_id,
+        }
+        for key in ("parent_run_id", "root_run_id"):
+            identifier = cls._safe_id(execution.get(key))
+            if identifier is not None:
+                projected_execution[key] = identifier
+        attempt = cls._nonnegative_int(execution.get("attempt"))
+        if attempt is not None:
+            projected_execution["attempt"] = attempt
+        return {"task_id": task_id, "execution": projected_execution}
 
     @classmethod
     def _positive_int(cls, value: object) -> int | None:

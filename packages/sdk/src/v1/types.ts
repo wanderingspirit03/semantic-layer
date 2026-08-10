@@ -7,7 +7,8 @@ export const LOSS_REASONS = [
   'size_overflow_blobbed', 'size_overflow_discarded', 'blob_scan_blocked',
   'queue_backpressure_drop', 'unsupported_native_value', 'source_rejection',
   'filter_limit_exclusion', 'missing_parent_context', 'parser_error_malformed_bytes',
-  'crash_recovery', 'uncertain_tail', 'shutdown_timeout', 'turn_order_ambiguous',
+  'missing_correlation_identity', 'crash_recovery', 'uncertain_tail',
+  'shutdown_timeout', 'turn_order_ambiguous',
   'persistence_failure',
 ] as const;
 export type LossReason = typeof LOSS_REASONS[number];
@@ -53,6 +54,17 @@ export type RejectedReceipt = { accepted: false; reason: string; settled: Promis
 export type AdmissionReceipt = AcceptedReceipt | RejectedReceipt;
 export type OpenTraceReceipt = (AcceptedReceipt & { identity: TraceIdentity }) | RejectedReceipt;
 
+export type RunCorrelationInput = Readonly<{
+  taskId: string;
+  execution: Readonly<{
+    system: string;
+    runId: string;
+    parentRunId?: string;
+    rootRunId?: string;
+    attempt?: number;
+  }>;
+}>;
+
 export type OpenTraceRecord = {
   name: string;
   coverage?: CoverageKey;
@@ -62,6 +74,7 @@ export type OpenTraceRecord = {
   turnIndex?: number;
   previousTurnId?: string;
   parentContext?: ParentContext;
+  correlation?: RunCorrelationInput;
   native?: unknown;
   /** Exact semantic authority for this lifecycle root, when the source seam guarantees it. */
   semantic?: Record<string, unknown>;
@@ -103,6 +116,10 @@ export type ObservationOptions = {
   previousTurnId?: string;
   /** W3C context received from a caller or process boundary. Active OTel is joined automatically. */
   parentContext?: ParentContext;
+  /** Exact cross-process identities. Values are HMAC protected before persistence. */
+  correlation?: RunCorrelationInput;
+  /** An application-owned signal whose aborted state proves cooperative cancellation. */
+  cancellationSignal?: Readonly<{ aborted: boolean }>;
   input?: unknown;
   metadata?: Record<string, unknown>;
 };

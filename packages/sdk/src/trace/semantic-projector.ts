@@ -555,6 +555,7 @@ export class SemanticProjector {
           ...(input.turn_id ? { turn_id: input.turn_id } : {}),
           ...(input.turn_index !== undefined ? { turn_index: input.turn_index } : {}),
           ...(input.previous_turn_id ? { previous_turn_id: input.previous_turn_id } : {}),
+          ...(input.run_correlation ? { correlation: runCorrelationOf(input.run_correlation) } : {}),
         }, null, continuation.links);
         this.rootsByTrace.set(input.trace_id, {
           sourceRecord: input.record_id,
@@ -1191,6 +1192,27 @@ function isJson(value: Json | undefined): value is Json {
 
 function isJsonObject(value: Json | undefined): value is JsonObject {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function runCorrelationOf(
+  correlation: NonNullable<SemanticCaptureEventV1['run_correlation']>,
+): JsonObject {
+  return {
+    task_id: correlation.task_id,
+    execution: {
+      system: correlation.execution.system,
+      run_id: correlation.execution.run_id,
+      ...(correlation.execution.parent_run_id
+        ? { parent_run_id: correlation.execution.parent_run_id }
+        : {}),
+      ...(correlation.execution.root_run_id
+        ? { root_run_id: correlation.execution.root_run_id }
+        : {}),
+      ...(correlation.execution.attempt !== undefined
+        ? { attempt: correlation.execution.attempt }
+        : {}),
+    },
+  };
 }
 
 function messageRoleOf(

@@ -65,6 +65,35 @@ Python uses `with run.turn(...)` and the matching snake case fields. Keep one
 capture session open for work that belongs in one bundle. The
 [storage guide](storage.md) explains separate sessions and resumed workflows.
 
+Pass exact cross process identities when separate workers belong to one task:
+
+```ts
+await capture.observe('search-loop', {
+  correlation: {
+    taskId: researchId,
+    execution: {
+      system: 'trigger.dev',
+      runId: triggerRunId,
+      parentRunId: triggerParentRunId,
+      rootRunId: triggerRootRunId,
+      attempt: triggerAttemptNumber,
+    },
+  },
+}, runSearch);
+```
+
+Python uses `task_id`, `run_id`, `parent_run_id`, `root_run_id`, and `attempt`.
+Configure the same tenant scoped `identityKey` for every worker that must join.
+The SDK stores protected values only. See
+[Cross process correlation](capture-contract.md#cross-process-correlation) for
+the privacy and matching rules.
+
+TypeScript callers can pass `cancellationSignal` when an application owned
+abort signal is the exact cooperative cancellation boundary. If the callback
+throws after that signal is aborted, capture records a cancelled outcome and
+rethrows the same value. It does not classify an error as cancelled from its
+name or message.
+
 ## Typed callback bridge
 
 The bridge fits an agent that already publishes stable callbacks:

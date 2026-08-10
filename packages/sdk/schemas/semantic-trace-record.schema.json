@@ -241,7 +241,28 @@
         "conversation_id": { "$ref": "#/$defs/id" },
         "turn_id": { "$ref": "#/$defs/id" },
         "turn_index": { "type": "integer", "minimum": 0 },
-        "previous_turn_id": { "$ref": "#/$defs/id" }
+        "previous_turn_id": { "$ref": "#/$defs/id" },
+        "correlation": { "$ref": "#/$defs/run_correlation" }
+      },
+      "additionalProperties": false
+    },
+    "run_correlation": {
+      "type": "object",
+      "required": ["task_id", "execution"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/id" },
+        "execution": {
+          "type": "object",
+          "required": ["system", "run_id"],
+          "properties": {
+            "system": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]{2,127}$" },
+            "run_id": { "$ref": "#/$defs/id" },
+            "parent_run_id": { "$ref": "#/$defs/id" },
+            "root_run_id": { "$ref": "#/$defs/id" },
+            "attempt": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

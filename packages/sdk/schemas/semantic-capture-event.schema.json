@@ -20,6 +20,7 @@
     "turn_id": { "$ref": "#/$defs/id" },
     "turn_index": { "type": "integer", "minimum": 0 },
     "previous_turn_id": { "$ref": "#/$defs/id" },
+    "run_correlation": { "$ref": "#/$defs/run_correlation" },
     "source": {
       "type": "object",
       "required": ["source_id", "name", "seam", "identity_domain", "official"],
@@ -187,6 +188,26 @@
     }
   ],
   "$defs": {
+    "run_correlation": {
+      "type": "object",
+      "required": ["task_id", "execution"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/id" },
+        "execution": {
+          "type": "object",
+          "required": ["system", "run_id"],
+          "properties": {
+            "system": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]{2,127}$" },
+            "run_id": { "$ref": "#/$defs/id" },
+            "parent_run_id": { "$ref": "#/$defs/id" },
+            "root_run_id": { "$ref": "#/$defs/id" },
+            "attempt": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "id": { "type": "string", "pattern": "^[a-z][a-z0-9_:-]{7,127}$" },
     "bounded": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -307,7 +328,7 @@
         "size_overflow_blobbed", "size_overflow_discarded", "blob_scan_blocked",
         "queue_backpressure_drop", "persistence_failure", "unsupported_native_value", "source_rejection",
         "filter_limit_exclusion", "missing_parent_context", "parser_error_malformed_bytes",
-        "crash_recovery", "uncertain_tail", "shutdown_timeout", "turn_order_ambiguous"
+        "missing_correlation_identity", "crash_recovery", "uncertain_tail", "shutdown_timeout", "turn_order_ambiguous"
       ]
     }
   }

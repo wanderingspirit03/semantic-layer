@@ -11,6 +11,13 @@ inputs include globally unique bucket names, an immutable image digest, a
 numeric key registry version, billing settings, alert recipients, and operator
 identities.
 
+`trace_reader_members` is the normal access list for the public trace CLI. It
+grants only object list and read access to the managed `tenants/` folder. It
+cannot read incomplete uploads or audit objects in the same bucket. It does not
+grant deletion, audit writing, metering access, registry access, or release
+access. Keep `bundle_operator_members` for the smaller operations group that
+needs the approved deletion and recovery commands.
+
 [`outputs.tf`](outputs.tf) returns the ingest URL, bucket names, registry secret,
 runtime service account, Artifact Registry repository, build source bucket, and
 build service account. Deployment and operations use these outputs instead of

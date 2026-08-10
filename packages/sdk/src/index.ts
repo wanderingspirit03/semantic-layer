@@ -55,6 +55,7 @@ export type {
   OpenTraceRecord,
   ParentContext,
   RejectedReceipt,
+  RunCorrelationInput,
   SemanticCaptureEventV1,
   SourceQualification,
   SourceLifecycle,

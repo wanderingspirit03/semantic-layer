@@ -117,12 +117,12 @@ try {
     {
       name: 'semantic-layer-capture',
       directory: 'packages/sdk',
-      version: '0.2.0-beta.1',
+      version: '0.2.0-beta.2',
     },
     {
       name: 'semantic-layer-cloud',
       directory: 'packages/cloud',
-      version: '0.1.0-pilot.3',
+      version: '0.1.0-pilot.4',
       bin: 'semantic-layer-cloud',
     },
     {
@@ -135,6 +135,12 @@ try {
       directory: 'packages/openclaw-setup',
       version: '0.1.0-pilot.9',
       bin: 'semantic-layer-openclaw-setup',
+    },
+    {
+      name: 'semantic-layer-traces',
+      directory: 'packages/trace-cli',
+      version: '0.1.0-pilot.2',
+      bin: 'semantic-layer-traces',
     },
   ];
   const publicPackages = [];
@@ -185,6 +191,7 @@ try {
     XDG_DATA_HOME: join(cliState, 'xdg-data'),
     XDG_STATE_HOME: join(cliState, 'xdg-state'),
     SEMANTIC_LAYER_INGEST_KEY: 'package-smoke-ingest-secret',
+    SEMANTIC_LAYER_TRACES_CONFIG: join(cliState, 'trace-config.json'),
   };
   const cloudBin = join(installDir, 'node_modules/.bin/semantic-layer-cloud');
   const statusOutput = run(cloudBin, [
@@ -217,6 +224,69 @@ try {
     beforeOpenClawHelp,
     'OpenClaw help must not modify client configuration',
   );
+
+  const traceBin = join(installDir, 'node_modules/.bin/semantic-layer-traces');
+  const beforeTraceHelp = (await readdir(cliState, { recursive: true })).sort();
+  const traceHelp = run(traceBin, ['--help'], installDir, { env: cliEnvironment });
+  assert.match(traceHelp, /Workflow[\s\S]*gcloud auth application-default login/u);
+  assert.deepEqual(
+    (await readdir(cliState, { recursive: true })).sort(),
+    beforeTraceHelp,
+    'trace CLI help must not modify local configuration',
+  );
+  for (const command of [
+    'configure',
+    'doctor',
+    'tenants',
+    'installations',
+    'sync',
+    'list',
+    'show',
+    'related',
+  ]) {
+    const commandHelp = run(traceBin, [command, '--help'], installDir, { env: cliEnvironment });
+    assert.match(commandHelp, /^semantic-layer-traces/u, `${command} help must work after clean install`);
+  }
+  const traceOutput = join(cliState, 'trace-output');
+  const configuredTrace = JSON.parse(run(traceBin, [
+    'configure', 'package',
+    '--project', 'package-smoke-project',
+    '--bucket', 'package-smoke-bucket',
+    '--output', traceOutput,
+    '--json',
+  ], installDir, { env: cliEnvironment }));
+  assert.equal(configuredTrace.output, traceOutput);
+  const traceScratch = join(cliState, 'trace-source');
+  const traceBundle = run('node', [
+    '--input-type=module',
+    '-e',
+    [
+      'import { initialize } from "semantic-layer-capture";',
+      'import { chmod, mkdir, readFile, rename } from "node:fs/promises";',
+      'import { join } from "node:path";',
+      `const capture = initialize({ output: ${JSON.stringify(traceScratch)}, serviceName: "trace-cli-package-smoke" });`,
+      'await capture.observe("smoke", {}, async () => "ok");',
+      'const closed = await capture.shutdown();',
+      'const manifest = JSON.parse(await readFile(join(closed.artifactPath, "manifest.json"), "utf8"));',
+      `const installationRoot = join(${JSON.stringify(traceOutput)}, "tenant_package_smoke", "install_0123456789abcdef0123456789abcdef");`,
+      'await mkdir(installationRoot, { recursive: true, mode: 0o700 });',
+      'await chmod(installationRoot, 0o700);',
+      'await rename(closed.artifactPath, join(installationRoot, manifest.bundle_id));',
+      'process.stdout.write(manifest.bundle_id);',
+    ].join('\n'),
+  ], installDir).trim();
+  const localList = JSON.parse(run(traceBin, [
+    'list', '--environment', 'package', '--tenant', 'tenant_package_smoke', '--json',
+  ], installDir, { env: cliEnvironment }));
+  assert.equal(localList.length, 1);
+  assert.equal(localList[0].valid, true);
+  assert.equal(localList[0].bundle, traceBundle);
+  const safeShow = JSON.parse(run(traceBin, [
+    'show', `tenant_package_smoke/install_0123456789abcdef0123456789abcdef/${traceBundle}`,
+    '--environment', 'package', '--summary-only', '--json',
+  ], installDir, { env: cliEnvironment }));
+  assert.deepEqual(Object.keys(safeShow), ['summary']);
+  assert.equal(safeShow.summary.valid, true);
 
   const pythonDist = join(work, 'python-package');
   await mkdir(pythonDist);
