@@ -2,7 +2,15 @@
   "name": "semantic-layer-tavi-trigger-attempt-example",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
   "devDependencies": {
-    "@trigger.dev/sdk": "4.4.4"
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/sdk-trace-base": "1.25.1",
+    "@trigger.dev/sdk": "4.4.4",
+    "typescript": "5.7.3",
+    "vitest": "1.6.1"
   }
 }

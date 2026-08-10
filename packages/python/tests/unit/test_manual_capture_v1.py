@@ -132,6 +132,37 @@ def test_missing_required_run_correlation_is_fail_open_and_explicit(tmp_path: Pa
     assert loss["data"]["path"] == "/run_correlation"
 
 
+@pytest.mark.parametrize("execution", [None, "not-an-execution-mapping"])
+def test_missing_execution_mapping_names_current_identity_gap(
+    tmp_path: Path,
+    execution: object,
+) -> None:
+    capture = initialize(
+        output=tmp_path,
+        service_name="manual-missing-execution",
+        identity_key="fixture-missing-execution-key",
+    )
+    with capture.observe(
+        "ralph-loop",
+        correlation={
+            "task_id": "research-task-private",
+            "execution": execution,
+        },
+    ):
+        pass
+
+    artifact = Path(capture.shutdown().artifact_path)
+    rows = [json.loads(line) for line in (artifact / "trace.jsonl").read_text().splitlines()]
+    losses = [
+        row
+        for row in rows
+        if row["kind"] == "loss"
+        and row["data"]["reason"] == "missing_correlation_identity"
+    ]
+    assert len(losses) == 1
+    assert losses[0]["data"]["count"] == 1
+
+
 def test_invalid_optional_run_relation_does_not_remove_valid_correlation(
     tmp_path: Path,
 ) -> None:

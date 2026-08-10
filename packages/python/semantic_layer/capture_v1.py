@@ -2286,7 +2286,10 @@ def _snapshot_run_correlation_input(
         )
     if not execution_ok or type(execution) not in {dict, MappingProxyType}:
         faults.append(
-            ("correlation.execution", TypeError("execution must be a mapping"))
+            (
+                "correlation.execution",
+                _MissingCorrelationIdentityError("execution must be a mapping"),
+            )
         )
         return None
 

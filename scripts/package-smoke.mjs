@@ -139,7 +139,7 @@ try {
     {
       name: 'semantic-layer-traces',
       directory: 'packages/trace-cli',
-      version: '0.1.0-pilot.1',
+      version: '0.1.0-pilot.2',
       bin: 'semantic-layer-traces',
     },
   ];
@@ -234,7 +234,16 @@ try {
     beforeTraceHelp,
     'trace CLI help must not modify local configuration',
   );
-  for (const command of ['configure', 'doctor', 'tenants', 'installations', 'sync', 'list', 'show']) {
+  for (const command of [
+    'configure',
+    'doctor',
+    'tenants',
+    'installations',
+    'sync',
+    'list',
+    'show',
+    'related',
+  ]) {
     const commandHelp = run(traceBin, [command, '--help'], installDir, { env: cliEnvironment });
     assert.match(commandHelp, /^semantic-layer-traces/u, `${command} help must work after clean install`);
   }

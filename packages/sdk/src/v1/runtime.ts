@@ -1278,7 +1278,12 @@ function snapshotRunCorrelation(
   }
   if (!execution.ok || !execution.value || typeof execution.value !== 'object'
     || Array.isArray(execution.value)) {
-    faults.push(invalidInput('correlation.execution', 'must be an object'));
+    faults.push(invalidInput(
+      'correlation.execution',
+      'must be an object',
+      undefined,
+      'missing_correlation_identity',
+    ));
     return undefined;
   }
   const system = readCaptureValue(execution.value, 'system', faults);

@@ -1,6 +1,6 @@
 {
   "name": "semantic-layer-traces",
-  "version": "0.1.0-pilot.1",
+  "version": "0.1.0-pilot.2",
   "type": "module",
   "description": "Read-only CLI for discovering, syncing, and inspecting Semantic Layer traces in Google Cloud Storage",
   "license": "MIT",

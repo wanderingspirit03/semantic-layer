@@ -28,6 +28,12 @@ it('keeps the application exporter and projects an exact-version rich agent trac
   const source = createOpenTelemetrySource({ version: '1.25.1' });
   capture.installSource(source);
 
+  const baselineExporter = new InMemorySpanExporter();
+  const baselineProvider = new BasicTracerProvider();
+  baselineProvider.addSpanProcessor(new SimpleSpanProcessor(baselineExporter));
+  emitRichFixture(baselineProvider.getTracer('tavi-fixture', '1', { schemaUrl }));
+  await baselineProvider.forceFlush();
+
   const applicationExporter = new InMemorySpanExporter();
   const provider = new BasicTracerProvider();
   provider.addSpanProcessor(new SimpleSpanProcessor(applicationExporter));
@@ -86,6 +92,8 @@ it('keeps the application exporter and projects an exact-version rich agent trac
     'execute_tool search',
     'invoke_agent ralph-loop',
   ]);
+  expect(applicationExporter.getFinishedSpans().map(applicationSpanEvidence))
+    .toEqual(baselineExporter.getFinishedSpans().map(applicationSpanEvidence));
   expect(records.map((record) => record.kind)).toEqual([
     'run.start',
     'message',
@@ -96,6 +104,7 @@ it('keeps the application exporter and projects an exact-version rich agent trac
     'run.outcome',
   ]);
   expect(validation).toMatchObject({ valid: true, issues: [] });
+  await baselineProvider.shutdown();
   await provider.shutdown();
 });
 
@@ -177,3 +186,59 @@ it('preserves an exact-version status message when a run fails', async () => {
   });
   await provider.shutdown();
 });
+
+function emitRichFixture(tracer) {
+  const agent = tracer.startSpan('invoke_agent ralph-loop', {
+    attributes: {
+      'gen_ai.operation.name': 'invoke_agent',
+      'gen_ai.agent.name': 'ralph-loop',
+      'gen_ai.input.messages': JSON.stringify([
+        { role: 'user', parts: [{ type: 'text', content: 'research' }] },
+      ]),
+    },
+  });
+  const agentContext = trace.setSpan(context.active(), agent);
+  const model = tracer.startSpan('chat fixture-model', {
+    attributes: {
+      'gen_ai.operation.name': 'chat',
+      'gen_ai.request.model': 'fixture-model',
+      'gen_ai.input.messages': JSON.stringify([
+        { role: 'user', parts: [{ type: 'text', content: 'research' }] },
+      ]),
+    },
+  }, agentContext);
+  model.setAttribute('gen_ai.output.messages', JSON.stringify([
+    { role: 'assistant', parts: [{ type: 'text', content: 'use search' }] },
+  ]));
+  model.end();
+  const tool = tracer.startSpan('execute_tool search', {
+    attributes: {
+      'gen_ai.operation.name': 'execute_tool',
+      'gen_ai.tool.name': 'search',
+      'gen_ai.tool.call.id': 'call-search-1',
+      'gen_ai.tool.call.arguments': '{"query":"fixture"}',
+    },
+  }, agentContext);
+  tool.setAttribute('gen_ai.tool.call.result', '{"count":1}');
+  tool.end();
+  agent.setAttribute('gen_ai.output.messages', JSON.stringify([
+    { role: 'assistant', parts: [{ type: 'text', content: 'done' }] },
+  ]));
+  agent.end();
+}
+
+function applicationSpanEvidence(span) {
+  return {
+    name: span.name,
+    kind: span.kind,
+    hasParent: Boolean(span.parentSpanId),
+    attributes: span.attributes,
+    status: span.status,
+    events: span.events,
+    links: span.links,
+    droppedAttributesCount: span.droppedAttributesCount,
+    droppedEventsCount: span.droppedEventsCount,
+    droppedLinksCount: span.droppedLinksCount,
+    instrumentationLibrary: span.instrumentationLibrary,
+  };
+}

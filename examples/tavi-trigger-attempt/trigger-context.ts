@@ -17,7 +17,11 @@ export function triggerIdentityFromContext(
     ...(ctx.run.parentTaskRunId
       ? { parentRunId: ctx.run.parentTaskRunId }
       : {}),
-    rootRunId: ctx.run.rootTaskRunId ?? ctx.run.id,
+    ...(ctx.run.rootTaskRunId
+      ? { rootRunId: ctx.run.rootTaskRunId }
+      : ctx.run.parentTaskRunId
+        ? {}
+        : { rootRunId: ctx.run.id }),
     attemptNumber: ctx.attempt.number,
     researchId,
     ...(traceparent ? { traceparent } : {}),

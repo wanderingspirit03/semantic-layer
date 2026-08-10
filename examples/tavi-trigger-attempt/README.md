@@ -67,9 +67,21 @@ join these bundles. Keep different customers on different identity keys.
 
 ## Task integration
 
-Create a new OpenTelemetry source for every attempt. Add its processors to the
-providers that the task already owns. Do not replace the provider or the
-Latitude exporter.
+Create one attempt router when the Trigger worker starts. Add its span
+processor to Tavi's existing provider exactly once, beside the Latitude
+processor. Do not add an attempt source directly to the provider. OpenTelemetry
+1.25 does not provide a safe way to remove that processor, and direct setup can
+mix spans from concurrent attempts.
+
+```ts
+import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
+
+const semanticLayerAttemptRouter = createTaviOpenTelemetryAttemptRouter();
+existingTracerProvider.addSpanProcessor(semanticLayerAttemptRouter.spanProcessor);
+```
+
+Create a new OpenTelemetry source for every enrolled attempt. Pass it to the
+shared router through the wrapper.
 
 ```ts
 import { createOpenTelemetrySource } from 'semantic-layer-capture';
@@ -86,9 +98,7 @@ const result = await runTaviTriggerAttempt({
   signal: cancellationSignal,
   openTelemetry: {
     source: semanticLayerOtelSource,
-    attach(source) {
-      existingTracerProvider.addSpanProcessor(source.spanProcessor);
-    },
+    router: semanticLayerAttemptRouter,
   },
   reportDelivery(delivery) {
     existingSafeDiagnosticSink.record(delivery);
@@ -102,9 +112,12 @@ The wrapper maps only public fields from Trigger 4.4.4. It uses `ctx.run.id`,
 `ctx.attempt.number`. Trigger 4.4.4 does not expose a replay relation. A replay
 therefore appears as a new run under the same research task.
 
-Keep Tavi's existing provider and Latitude processor. Add only
-`source.spanProcessor` from the fresh Semantic Layer source. Do not import a
-processor from Trigger's nested OpenTelemetry 2.x packages.
+Keep Tavi's existing provider and Latitude processor. Add only the shared
+router processor. The router uses the direct OpenTelemetry 1.25 types owned by
+Tavi. It does not import a processor from Trigger's nested OpenTelemetry 2.x
+packages. It remembers which attempt started each span and sends the completed
+span only to that attempt's Semantic Layer source. Spans outside an enrolled
+attempt are ignored by Arcus and remain available to Latitude.
 
 Tavi's tool spans need these attributes:
 
@@ -130,23 +143,38 @@ The diagnostic callback receives only one status and an optional safe request
 ID. The allowed statuses are `acknowledged`, `timed_out`, `capture_failed`,
 `upload_failed`, and `not_captured`. It never receives a secret, local path,
 trace content, customer content, or bundle digest.
+The wrapper does not wait for a promise returned by this callback. A stalled
+diagnostic sink cannot delay the customer result or error.
 
 The wrapper creates a private output directory and a private upload spool for
 each attempt. It reports `acknowledged` only after the cloud service confirms
 the expected bundle digest. A local pending spool is not considered safe in an
 isolated Trigger worker.
 
+A successful research must pass the `rich-agent` profile before upload. It
+must contain one root and outcome, one model request and response, and one tool
+call and result under the same root. A successful but empty capture reports
+`capture_failed` and is not uploaded. A failed or cancelled research uses
+structural validation because a provider can fail before a model or tool
+result exists. Named loss records remain part of that bundle. Missing required
+correlation, rejected records, an invalid bundle, or an unexplained capture
+error prevents upload.
+
 The wrapper sends raw Trigger correlation through the capture API. Semantic
 Layer protects the task, current run, parent run, and root run IDs before it
 writes them. Current, parent, and root run IDs use the same identity domain, so
 a child bundle can match its protected parent ID to the parent's protected
 current run ID. Retries keep the same protected run ID and use a higher attempt
-number. A replay has a new Trigger run ID.
+number. A replay has a new Trigger run ID. When Trigger exposes a parent ID but
+does not expose a root ID, the mapper leaves the root relation absent. It does
+not claim that the child is its own root.
 
-Cooperative cancellation still runs the task's `finally` block, so the wrapper
-records a cancelled run outcome before it seals and uploads the bundle. A
-forced worker stop cannot run cleanup. The example does not claim evidence
-delivery after a forced stop.
+The Trigger cancellation signal starts the same bounded finalization used by
+normal completion. The capture runtime waits for active work within its
+deadline, then records a cancelled outcome and a named timeout loss if work has
+not settled. The wrapper still preserves the exact value later thrown by the
+task. A forced worker stop cannot run cleanup. The example does not claim
+evidence delivery after a forced stop.
 
 The tests also run a parent ralph loop and child search loop through fresh
 OpenTelemetry sources. Each bundle contains a complete model pair and tool
@@ -183,11 +211,15 @@ Run these checks before production:
 5. Run a different tenant. It must create no Arcus files, spool, spans, or
    upload.
 
-6. Run normal failure, application timeout, cooperative cancellation, retry,
+6. Run two enrolled attempts and one unenrolled attempt at the same time on
+   one OpenTelemetry 1.25 provider. Latitude must receive every expected span.
+   Each Arcus bundle must contain only its own attempt.
+
+7. Run normal failure, application timeout, cooperative cancellation, retry,
    replay, parallel attempts, and forced upload failure. Telemetry must not
    change the task result or exact thrown value.
 
-7. Search logs for the ingest key, identity key, customer content, local paths,
+8. Search logs for the ingest key, identity key, customer content, local paths,
    bundle digests, and upload response bodies. None may be present.
 
 Return only safe run IDs, attempt numbers, completion state, time, Latitude
@@ -195,24 +227,28 @@ received status, Arcus received status, and the safe Arcus delivery status.
 
 ## Production and rollback
 
-Production uses the same tested package versions and Node runtime. Store the
-four secrets in Trigger production secrets. Enable only the Lindh resolver
-entry. Run one private verification research and confirm both observability
-services with safe identifiers only.
+Do not issue a customer key until the pinned packages have been published and
+installed from the public registry in a clean Node 22.16 environment. Then use
+the same package versions and Node runtime in production. Store the four
+secrets in Trigger production secrets. Enable only the Lindh resolver entry.
+Run one private verification research and confirm both observability services
+with safe identifiers only.
 
 To roll back, disable the Lindh resolver entry or deploy the prior Tavi task
 version. Leave the Latitude provider and exporter unchanged. Revoke the Trigger
 ingestion key. Revert the Node runtime only through a tested deployment
 rollback. Keep any bundles that the cloud already acknowledged.
 
+After rollback, run one normal Tavi research and the deployed OpenTelemetry
+probe. Confirm that the customer result is unchanged and Latitude still
+receives its expected spans before closing the rollback.
+
 ## Checks
 
 Run the example tests and type check from the repository root:
 
 ```sh
-pnpm install --dir examples/tavi-trigger-attempt --ignore-workspace --lockfile=false
-pnpm dlx node@22.16.0 node_modules/vitest/vitest.mjs run \
-  --config examples/tavi-trigger-attempt/vitest.config.ts
-pnpm dlx node@22.16.0 node_modules/typescript/bin/tsc \
-  -p examples/tavi-trigger-attempt/tsconfig.json
+pnpm install --dir examples/tavi-trigger-attempt --ignore-workspace --frozen-lockfile
+pnpm --dir examples/tavi-trigger-attempt run test
+pnpm --dir examples/tavi-trigger-attempt run typecheck
 ```

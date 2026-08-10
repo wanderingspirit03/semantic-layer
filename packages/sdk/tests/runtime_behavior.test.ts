@@ -294,6 +294,39 @@ describe('runtime production guarantees', () => {
       .resolves.toMatchObject({ valid: true, issues: [] });
   });
 
+  it.each([undefined, 'not-an-execution-object'])(
+    'names the missing current execution identity when execution is %s',
+    async (execution) => {
+      const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-missing-execution-'));
+      const capture = createCapture({
+        output,
+        serviceName: 'runtime-missing-execution',
+        identityKey: 'fixture-missing-execution-key',
+      });
+
+      await capture.observe('ralph-loop', {
+        correlation: {
+          taskId: 'research-task-private',
+          execution: execution as never,
+        },
+      }, async () => 'customer-result');
+
+      const closed = await capture.shutdown();
+      const rows = await traceRows(closed.artifactPath);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'loss',
+          data: expect.objectContaining({
+            reason: 'missing_correlation_identity',
+            count: 1,
+          }),
+        }),
+      ]));
+      await expect(validateArtifact(closed.artifactPath))
+        .resolves.toMatchObject({ valid: true, issues: [] });
+    },
+  );
+
   it('keeps valid correlation when an optional execution relation is invalid', async () => {
     const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-optional-correlation-gap-'));
     const capture = createCapture({

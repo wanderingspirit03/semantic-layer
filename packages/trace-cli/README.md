@@ -15,7 +15,7 @@ Keep the local output directory outside source repositories and shared folders.
 Use Node.js 22 or a supported newer version.
 
 ```sh
-npm install --global semantic-layer-traces@0.1.0-pilot.1
+npm install --global semantic-layer-traces@0.1.0-pilot.2
 ```
 
 Sign into Google Cloud with your work account:
