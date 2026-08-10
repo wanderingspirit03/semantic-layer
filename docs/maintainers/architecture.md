@@ -50,7 +50,6 @@ Adjacent modules keep transport and host concerns outside the capture runtime:
 | Capture runtime | Projection, credential scrubbing, and local sealing | Network upload |
 | Cloud uploader | Bundle validation, durable spooling, and exact-byte transport | Trace interpretation |
 | Ingest receiver | Authentication, admission, canonical validation, write-once object creation, and completion receipts | Agent or framework semantics |
-| Trace CLI | Read only completed-bundle discovery, private local sync, and safe summaries | Upload, deletion, keys, or incomplete ingest state |
 | GCP infrastructure | Deployment wiring, IAM, alerts, and enforced platform configuration | Application behavior |
 
 Use this page to place capture changes. The [ingest contract](../../contracts/ingest/v1/README.md)
@@ -91,7 +90,6 @@ Each module has one direction of responsibility:
 | Artifact writing and recovery | [`v1/artifact.ts`](../../packages/sdk/src/v1/artifact.ts) | `_Artifact` in [`capture_v1.py`](../../packages/python/semantic_layer/capture_v1.py) | Write only `manifest.json`, `trace.jsonl`, and optional useful blobs. Relations and losses remain trace records. |
 | Safe evidence, privacy, and permissions | [`v1/error-evidence.ts`](../../packages/sdk/src/v1/error-evidence.ts), [`adapters/native-snapshot.ts`](../../packages/sdk/src/adapters/native-snapshot.ts), [`v1/secret-scanner.ts`](../../packages/sdk/src/v1/secret-scanner.ts), and [`v1/permissions.ts`](../../packages/sdk/src/v1/permissions.ts) | [`_adapter_native.py`](../../packages/python/semantic_layer/_adapter_native.py), scanner and safe serialization in [`capture_v1.py`](../../packages/python/semantic_layer/capture_v1.py), and [`permissions.py`](../../packages/python/semantic_layer/permissions.py) | Avoid hostile getters, keep native evidence bounded, scan final files, and preserve owner-only bundle permissions. |
 | Artifact validation | [`v1/validation.ts`](../../packages/sdk/src/v1/validation.ts) | [`validation.py`](../../packages/python/semantic_layer/validation.py) | Validate schemas, ordering, references, accounting, blobs, permissions, secrets, and required evidence after sealing. |
-| Cloud trace access | [`packages/trace-cli`](../../packages/trace-cli) | Not applicable | Keep cloud access read only. Treat valid completion markers as the visibility boundary, validate before local use, and keep private content out of normal scripted output. |
 | Provider adapters | [`adapters/provider.ts`](../../packages/sdk/src/adapters/provider.ts) | [`provider_adapters.py`](../../packages/python/semantic_layer/provider_adapters.py) | Patch the application's existing client and remain the only stream observer added by capture. |
 | Framework adapters | One file per framework under [`src/adapters/`](../../packages/sdk/src/adapters/) | Framework-local adapter files under [`semantic_layer/`](../../packages/python/semantic_layer/) | Keep release-specific callback and correlation knowledge local to its framework. Do not add a framework registry or generic callback router. |
 | Custom agents | [`custom-agent.ts`](../../packages/sdk/src/custom-agent.ts) | [`custom_agent.py`](../../packages/python/semantic_layer/custom_agent.py) | Use the typed bridge for stable callbacks. Add one application source only when the bridge cannot express an exposed fact. |
@@ -171,7 +169,6 @@ change one shared case and make both implementations pass it.
 | Custom-agent bridge | `custom-agent.ts` or `custom_agent.py` | Preserve event parity and explicit missing-evidence reasons | Use the custom-agent test group below |
 | Privacy, redaction, blobs, or permissions | Writer, scanner, and validator modules | Writer and validator tests. Scan package contents when distribution changes. | Use the privacy and validation tests, then run `pnpm test:packages`. |
 | Packaging or advertised runtimes | Package metadata and build scripts | Clean tarball/wheel install and current package README | `pnpm build && pnpm test:packages` |
-| Read only cloud trace workflow | `packages/trace-cli` and `infra/gcp` trace reader IAM | Package guide and cloud operations guide | Run trace CLI tests, package tests, Terraform validation, and a safe staging sync. |
 
 Run `pnpm verify` before merging a change that crosses contracts,
 packaging, both runtimes, or multiple integrations.
