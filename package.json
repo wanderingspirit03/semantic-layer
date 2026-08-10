@@ -11,7 +11,7 @@
     "lint": "pnpm exec eslint . && uv run --project packages/python --extra dev ruff check packages/python",
     "typecheck": "pnpm -r --filter './packages/**' --if-present run typecheck && pnpm --filter semantic-layer-capture run typecheck:tests && uv run --isolated --project packages/python --extra dev mypy --config-file packages/python/pyproject.toml packages/python/semantic_layer",
     "contracts:check": "node contracts/trace/v1/validate-examples.mjs && node contracts/trace/v2/validate-contract.mjs && node scripts/cloud-integration.mjs contracts && pnpm --filter semantic-layer-capture run contracts:check && uv run --project packages/python --extra dev python packages/python/scripts/generate_capture_v1_models.py --check",
-    "build:typescript": "pnpm --filter semantic-layer-capture run build && pnpm --filter semantic-layer-cloud run build && pnpm --filter @semantic-layer/cloud-ingest run build && pnpm --filter semantic-layer-openclaw run build && pnpm --filter semantic-layer-openclaw-setup run build && pnpm --filter semantic-layer-traces run build",
+    "build:typescript": "pnpm --filter semantic-layer-capture run build && pnpm --filter semantic-layer-cloud run build && pnpm --filter @semantic-layer/cloud-ingest run build && pnpm --filter semantic-layer-openclaw run build && pnpm --filter semantic-layer-openclaw-setup run build",
     "build": "pnpm build:typescript && uv run --project packages/python --extra dev python -m build packages/python",
     "test:packages": "node --test scripts/package-content-scan.test.mjs && node scripts/package-smoke.mjs",
     "verify": "pnpm contracts:check && pnpm lint && pnpm build && pnpm typecheck && pnpm test:all && pnpm test:e2e:local && pnpm test:packages",
