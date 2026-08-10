@@ -64,7 +64,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: pnpm install --filter './packages/**' --frozen-lockfile
       - name: Build all TypeScript packages
-        run: pnpm -r --filter './packages/**' --if-present run build
+        run: pnpm build:typescript
       - name: Typecheck all TypeScript packages and capture compatibility suites
         run: |
           pnpm -r --filter './packages/**' --if-present run typecheck
@@ -100,11 +100,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
-      - run: corepack enable && corepack prepare pnpm@8.15.0 --activate
       - run: pnpm install --frozen-lockfile
       - name: Build the local capture and cloud packages
         run: |
