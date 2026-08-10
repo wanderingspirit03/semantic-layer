@@ -19,6 +19,7 @@ import {
   type TrustedTaviTenantConfig,
 } from './tavi-trigger-attempt.js';
 import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
+import { createTaviTriggerCancellationRegistry } from './trigger-cancellation.js';
 import { triggerIdentityFromContext } from './trigger-context.js';
 
 const roots: string[] = [];
@@ -283,6 +284,28 @@ describe('runTaviTriggerAttempt', () => {
     await provider.shutdown();
   });
 
+  it('ignores a retired attempt context while Latitude still receives its late span', async () => {
+    const latitude = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider();
+    const router = createTaviOpenTelemetryAttemptRouter();
+    const source = inertOpenTelemetrySource();
+    const arcusStarts = vi.spyOn(source.spanProcessor, 'onStart');
+    provider.addSpanProcessor(new SimpleSpanProcessor(latitude));
+    provider.addSpanProcessor(router.spanProcessor);
+    const tracer = provider.getTracer('tavi-late-span');
+    const unregister = router.registerSource(source);
+    unregister();
+
+    router.runWithSource(source, () => {
+      tracer.startSpan('late-after-attempt').end();
+    });
+
+    expect(arcusStarts).not.toHaveBeenCalled();
+    expect(latitude.getFinishedSpans().map((span) => span.name))
+      .toEqual(['late-after-attempt']);
+    await provider.shutdown();
+  });
+
   it('seals an application timeout without replacing its identity', async () => {
     const root = await privateRoot();
     const timeout = Object.assign(new Error('application deadline'), { name: 'TimeoutError' });
@@ -293,7 +316,9 @@ describe('runTaviTriggerAttempt', () => {
       trigger: triggerIdentity(),
       temporaryRoot: root,
       reportDelivery: (delivery) => { deliveries.push(delivery); },
-      task: async () => { throw timeout; },
+      task: async () => await new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(timeout), 10);
+      }),
     })).rejects.toBe(timeout);
 
     expect(deliveries[0]?.status).toBe('acknowledged');
@@ -335,9 +360,43 @@ describe('runTaviTriggerAttempt', () => {
     }));
   });
 
+  it('lets the Trigger cancellation hook await acknowledged finalization', async () => {
+    const root = await privateRoot();
+    const registry = createTaviTriggerCancellationRegistry();
+    const cancellation = registry.register('trigger-run-1');
+    const failure = new Error('exact Trigger cancellation');
+    const deliveries: TaviTriggerDelivery[] = [];
+    let started!: () => void;
+    const taskStarted = new Promise<void>((resolve) => { started = resolve; });
+    const running = runTaviTriggerAttempt({
+      tenant: tenant(),
+      trigger: triggerIdentity(),
+      temporaryRoot: root,
+      cancellation,
+      reportDelivery: (delivery) => { deliveries.push(delivery); },
+      task: async ({ signal }) => await new Promise<never>((_resolve, reject) => {
+        started();
+        signal?.addEventListener('abort', () => reject(failure), { once: true });
+      }),
+    });
+    await taskStarted;
+
+    const hook = registry.cancel('trigger-run-1');
+    await expect(running).rejects.toBe(failure);
+    await hook;
+
+    expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
+    const rows = await traceRows(await onlyBundle(await onlyAttempt(root)));
+    expect(rows).toContainEqual(expect.objectContaining({
+      kind: 'run.outcome',
+      data: expect.objectContaining({ status: 'cancelled' }),
+    }));
+  });
+
   it('starts bounded finalization when cancellation is signalled before the task settles', async () => {
     const root = await privateRoot();
-    const controller = new AbortController();
+    const registry = createTaviTriggerCancellationRegistry();
+    const cancellationHandle = registry.register('trigger-run-1');
     const cancellation = new Error('exact delayed cancellation');
     let rejectTask!: (reason: unknown) => void;
     let reportDelivery!: (delivery: TaviTriggerDelivery) => void;
@@ -346,20 +405,22 @@ describe('runTaviTriggerAttempt', () => {
       tenant: { ...tenant(), shutdownDeadlineMs: 20 },
       trigger: triggerIdentity(),
       temporaryRoot: root,
-      signal: controller.signal,
+      cancellation: cancellationHandle,
       reportDelivery,
       task: async () => await new Promise<never>((_resolve, reject) => {
         rejectTask = reject;
       }),
     });
 
-    controller.abort();
+    const hook = registry.cancel('trigger-run-1');
     await expect(Promise.race([
       delivered,
       new Promise((_, reject) => setTimeout(() => reject(new Error('delivery stalled')), 500)),
-    ])).resolves.toMatchObject({ status: 'acknowledged' });
+    ])).resolves.toMatchObject({ status: 'capture_failed' });
+    await hook;
     rejectTask(cancellation);
     await expect(running).rejects.toBe(cancellation);
+    expect(await readdir(await onlyAttempt(root))).not.toContain('spool');
   });
 
   it('fails open when upload is permanently rejected', async () => {
@@ -439,7 +500,7 @@ describe('runTaviTriggerAttempt', () => {
     expect(deliveries).toEqual([{ status: 'capture_failed' }]);
   });
 
-  it('does not wait for a diagnostic callback that never settles', async () => {
+  it('does not wait when untyped JavaScript supplies an unsupported async diagnostic', async () => {
     const root = await privateRoot();
     const failure = new Error('exact customer result path');
 
@@ -448,7 +509,7 @@ describe('runTaviTriggerAttempt', () => {
         tenant: null,
         trigger: triggerIdentity(),
         temporaryRoot: root,
-        reportDelivery: async () => await new Promise<void>(() => {}),
+        reportDelivery: (() => new Promise<void>(() => {})) as never,
         task: async () => { throw failure; },
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('diagnostic stalled')), 500)),

@@ -79,30 +79,43 @@ const semanticLayerAttemptRouter = createTaviOpenTelemetryAttemptRouter();
 existingTracerProvider.addSpanProcessor(semanticLayerAttemptRouter.spanProcessor);
 ```
 
-Create a new OpenTelemetry source for every enrolled attempt. Pass it to the
-shared router through the wrapper.
+Create one cancellation registry beside the router. Trigger's task-local
+`onCancel` hook aborts the matching attempt and waits for its bounded telemetry
+finalization. Create a new OpenTelemetry source inside every enrolled attempt.
 
 ```ts
+import { task } from '@trigger.dev/sdk/v3';
 import { createOpenTelemetrySource } from 'semantic-layer-capture';
+import { createTaviTriggerCancellationRegistry } from './trigger-cancellation.js';
 
-const semanticLayerOtelSource = createOpenTelemetrySource({ version: '1.25.1' });
+const cancellations = createTaviTriggerCancellationRegistry();
 
-const result = await runTaviTriggerAttempt({
-  tenant: trustedTenantOrNull,
-  trigger: triggerIdentityFromContext(
-    ctx,
-    stableResearchId,
-    incomingTraceparent,
-  ),
-  signal: cancellationSignal,
-  openTelemetry: {
-    source: semanticLayerOtelSource,
-    router: semanticLayerAttemptRouter,
+export const researchTask = task({
+  id: 'tavi-research',
+  onCancel: async ({ ctx }) => {
+    await cancellations.cancel(ctx.run.id);
   },
-  reportDelivery(delivery) {
-    existingSafeDiagnosticSink.record(delivery);
+  run: async (payload, { ctx }) => {
+    const cancellation = cancellations.register(ctx.run.id);
+    const source = createOpenTelemetrySource({ version: '1.25.1' });
+    return await runTaviTriggerAttempt({
+      tenant: trustedTenantOrNull,
+      trigger: triggerIdentityFromContext(
+        ctx,
+        stableResearchId,
+        incomingTraceparent,
+      ),
+      cancellation,
+      openTelemetry: {
+        source,
+        router: semanticLayerAttemptRouter,
+      },
+      reportDelivery(delivery) {
+        existingSafeDiagnosticSink.recordSynchronously(delivery);
+      },
+      task: async ({ signal }) => await runResearch(payload, { signal }),
+    });
   },
-  task: async ({ signal }) => await runResearch({ signal }),
 });
 ```
 
@@ -142,8 +155,10 @@ The diagnostic callback receives only one status and an optional safe request
 ID. The allowed statuses are `acknowledged`, `timed_out`, `capture_failed`,
 `upload_failed`, and `not_captured`. It never receives a secret, local path,
 trace content, customer content, or bundle digest.
-The wrapper does not wait for a promise returned by this callback. A stalled
-diagnostic sink cannot delay the customer result or error.
+The callback must store the status synchronously and return `undefined`. An
+async diagnostic callback is not supported. This keeps the status visible
+without allowing a stalled diagnostic service to delay the customer result or
+error.
 
 The wrapper creates a private output directory and a private upload spool for
 each attempt. It reports `acknowledged` only after the cloud service confirms
@@ -168,12 +183,15 @@ number. A replay has a new Trigger run ID. When Trigger exposes a parent ID but
 does not expose a root ID, the mapper leaves the root relation absent. It does
 not claim that the child is its own root.
 
-The Trigger cancellation signal starts the same bounded finalization used by
-normal completion. The capture runtime waits for active work within its
-deadline, then records a cancelled outcome and a named timeout loss if work has
-not settled. The wrapper still preserves the exact value later thrown by the
+The task-local Trigger cancellation hook starts the same bounded finalization
+used by normal completion and waits for it. A cooperative task that settles
+within the deadline records a cancelled outcome and can upload. If task cleanup
+does not settle before the deadline, the bundle reports `capture_failed` and is
+not uploaded. The wrapper still preserves the exact value later thrown by the
 task. A forced worker stop cannot run cleanup. The example does not claim
 evidence delivery after a forced stop.
+Set the capture and upload deadlines so their total fits inside Tavi's Trigger
+cancellation grace period.
 
 The tests also run a parent ralph loop and child search loop through fresh
 OpenTelemetry sources. Each bundle contains a complete model pair and tool

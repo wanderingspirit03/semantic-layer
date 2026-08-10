@@ -8,6 +8,7 @@ import {
 } from 'semantic-layer-capture';
 import { createCloudUploader, type CloudUploader } from 'semantic-layer-cloud';
 import type { TaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
+import type { TaviTriggerCancellation } from './trigger-cancellation.js';
 
 export type TrustedTaviTenantConfig = Readonly<{
   serviceName: string;
@@ -52,11 +53,14 @@ export type TaviTriggerAttemptOptions<T> = Readonly<{
   tenant: TrustedTaviTenantConfig | null;
   trigger: TaviTriggerIdentity;
   openTelemetry?: TaviOpenTelemetryAttachment;
+  /** Connects Trigger's task-local onCancel hook to bounded finalization. */
+  cancellation?: TaviTriggerCancellation;
   signal?: AbortSignal;
   /** Defaults to the operating system temporary directory. */
   temporaryRoot?: string;
   /** Receives a deliberately small, log-safe delivery result. */
-  reportDelivery?(delivery: TaviTriggerDelivery): void | Promise<void>;
+  /** Must persist synchronously. Any returned promise is ignored. */
+  reportDelivery?(delivery: TaviTriggerDelivery): void;
   task(context: { signal?: AbortSignal }): T | Promise<T>;
 }>;
 
@@ -69,9 +73,15 @@ export type TaviTriggerAttemptOptions<T> = Readonly<{
 export async function runTaviTriggerAttempt<T>(
   options: TaviTriggerAttemptOptions<T>,
 ): Promise<Awaited<T>> {
+  const signal = options.cancellation?.signal ?? options.signal;
   if (options.tenant === null) {
+    options.cancellation?.completeTelemetry();
     await reportSafely(options.reportDelivery, { status: 'not_captured' });
-    return await options.task({ signal: options.signal }) as Awaited<T>;
+    try {
+      return await options.task({ signal }) as Awaited<T>;
+    } finally {
+      options.cancellation?.release();
+    }
   }
 
   const tenant = options.tenant;
@@ -100,8 +110,13 @@ export async function runTaviTriggerAttempt<T>(
   } catch {
     settle(unregisterOpenTelemetry);
     await settleCapture(capture);
+    options.cancellation?.completeTelemetry();
     await reportSafely(options.reportDelivery, { status: 'capture_failed' });
-    return await options.task({ signal: options.signal }) as Awaited<T>;
+    try {
+      return await options.task({ signal }) as Awaited<T>;
+    } finally {
+      options.cancellation?.release();
+    }
   }
 
   let taskOutcome: 'pending' | 'succeeded' | 'failed' = 'pending';
@@ -113,9 +128,8 @@ export async function runTaviTriggerAttempt<T>(
       attemptDirectory,
       tenant,
       successful: () => taskOutcome === 'succeeded',
-      cancelled: () => options.signal?.aborted === true,
       reportDelivery: options.reportDelivery,
-    });
+    }).finally(() => { options.cancellation?.completeTelemetry(); });
     return finalization;
   };
 
@@ -142,14 +156,14 @@ export async function runTaviTriggerAttempt<T>(
           attempt: options.trigger.attemptNumber,
         },
       },
-      ...(options.signal ? { cancellationSignal: options.signal } : {}),
+      ...(signal ? { cancellationSignal: signal } : {}),
     },
     async () => options.openTelemetry
       ? await options.openTelemetry.router.runWithSource(
         options.openTelemetry.source,
-        async () => await options.task({ signal: options.signal }),
+        async () => await options.task({ signal }),
       )
-      : await options.task({ signal: options.signal }),
+      : await options.task({ signal }),
   );
   void observed.then(
     () => { taskOutcome = 'succeeded'; },
@@ -159,13 +173,14 @@ export async function runTaviTriggerAttempt<T>(
   const onAbort = () => {
     void finalize();
   };
-  options.signal?.addEventListener('abort', onAbort, { once: true });
-  if (options.signal?.aborted) onAbort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
   try {
     return await observed;
   } finally {
-    options.signal?.removeEventListener('abort', onAbort);
+    signal?.removeEventListener('abort', onAbort);
     await finalize();
+    options.cancellation?.release();
   }
 }
 
@@ -175,20 +190,17 @@ async function finalizeAttempt(input: {
   attemptDirectory: string;
   tenant: TrustedTaviTenantConfig;
   successful: () => boolean;
-  cancelled: () => boolean;
-  reportDelivery?: (delivery: TaviTriggerDelivery) => void | Promise<void>;
+  reportDelivery?: (delivery: TaviTriggerDelivery) => void;
 }): Promise<void> {
   let captureHealthy = true;
 
   let artifactPath: string | undefined;
   try {
     const closed = await input.capture.shutdown();
-    const expectedCancellationTimeout = input.cancelled()
-      && (closed.losses.shutdown_timeout ?? 0) > 0;
     if (
       closed.state !== 'closed'
       || closed.rejected !== 0
-      || (closed.lastError !== null && !expectedCancellationTimeout)
+      || closed.lastError !== null
     ) {
       captureHealthy = false;
     } else {
@@ -268,11 +280,12 @@ async function settleCapture(
 }
 
 async function reportSafely(
-  report: ((delivery: TaviTriggerDelivery) => void | Promise<void>) | undefined,
+  report: ((delivery: TaviTriggerDelivery) => void) | undefined,
   delivery: TaviTriggerDelivery,
 ): Promise<void> {
   if (!report) return;
   try {
-    void Promise.resolve(report(delivery)).catch(() => {});
+    const result: unknown = report(delivery);
+    if (result instanceof Promise) void result.catch(() => {});
   } catch { /* diagnostics never change task behavior */ }
 }

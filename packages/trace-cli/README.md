@@ -64,7 +64,7 @@ Find tenant IDs:
 semantic-layer-traces tenants --environment staging
 ```
 
-Find the OpenClaw installations for one tenant:
+Find the capture installations for one tenant:
 
 ```sh
 semantic-layer-traces installations \
@@ -72,9 +72,10 @@ semantic-layer-traces installations \
   --tenant "<TENANT_ID>"
 ```
 
-Each installation ID represents one OpenClaw installation. Two or more VMs
-remain separate when setup gives each VM its own installation ID. Do not clone
-one VM credential file onto another VM.
+Each installation ID represents one capture installation. OpenClaw VMs remain
+separate when setup gives each VM its own installation ID. A Trigger worker has
+its own installation ID and appears beside the VMs. Do not reuse one
+installation credential for another VM, worker, or integration.
 
 Download every completed bundle for the tenant:
 

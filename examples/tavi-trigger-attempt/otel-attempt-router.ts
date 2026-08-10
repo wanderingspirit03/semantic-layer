@@ -25,7 +25,7 @@ export function createTaviOpenTelemetryAttemptRouter(): TaviOpenTelemetryAttempt
   const spanProcessor: SpanProcessor = {
     onStart(span: Span, parentContext: Context): void {
       const source = currentSource.getStore();
-      if (!source) return;
+      if (!source || !activeSources.has(source)) return;
       const key = spanKey(span);
       if (!key || owners.has(key)) return;
       owners.set(key, source);
