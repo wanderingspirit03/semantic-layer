@@ -37,6 +37,7 @@ def _row(
     turn_id: str | None = None,
     turn_index: int | None = None,
     previous_turn_id: str | None = None,
+    run_correlation: dict[str, Any] | None = None,
     source_id: str = "official/openai",
     identity_domain: str = "openai.operation",
 ) -> dict[str, Any]:
@@ -69,7 +70,37 @@ def _row(
         row["turn_index"] = turn_index
     if previous_turn_id is not None:
         row["previous_turn_id"] = previous_turn_id
+    if run_correlation is not None:
+        row["run_correlation"] = run_correlation
     return row
+
+
+def test_projects_protected_run_correlation_on_root_start() -> None:
+    correlation = {
+        "task_id": f"task_{'a' * 64}",
+        "execution": {
+            "system": "trigger.dev",
+            "run_id": f"exec_{'b' * 64}",
+            "parent_run_id": f"exec_{'c' * 64}",
+            "root_run_id": f"exec_{'d' * 64}",
+            "attempt": 0,
+        },
+    }
+
+    records = SemanticProjector().project(
+        _row(
+            record_id="source-correlation-start",
+            event_kind="lifecycle",
+            phase="start",
+            name="agent.run",
+            semantic={"type": "agent.run", "name": "research"},
+            run_correlation=correlation,
+        )
+    )
+
+    assert records[0]["kind"] == "run.start"
+    assert records[0]["data"]["correlation"] == correlation
+    _assert_valid(records)
 
 
 def test_retires_model_tool_and_lifecycle_correlation_after_omission() -> None:

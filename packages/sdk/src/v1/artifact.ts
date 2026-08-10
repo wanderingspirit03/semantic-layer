@@ -51,6 +51,7 @@ export type EventDraft = {
   turn_id?: string;
   turn_index?: number;
   previous_turn_id?: string;
+  run_correlation?: SemanticCaptureEventV1['run_correlation'];
   source: SemanticCaptureEventV1['source'];
   coverage?: SemanticCaptureEventV1['coverage'];
   native_identity?: string;

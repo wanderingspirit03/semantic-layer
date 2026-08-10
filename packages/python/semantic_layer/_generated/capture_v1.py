@@ -1,4 +1,4 @@
-# Generated from semantic_capture_event_v1. Schema digest: 4026f827aa6f5009f66deae75f8659e214b3a54fa4d38d128a215a381ea8db91.
+# Generated from semantic_capture_event_v1. Schema digest: 800b1cf814c0c367b3d6eda085481b904d516e2d9983d2acc59c484f123851fe.
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ def _schema_validator(name: str) -> Draft202012Validator:
     schema = json.loads((_SCHEMAS / name).read_text(encoding="utf-8"))
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
-LossReason = Literal['credential_redaction', 'configured_redaction', 'scrubber_failure_payload_omitted', 'serialization_failure', 'unsafe_getter_avoided', 'unsafe_helper_avoided', 'size_overflow_blobbed', 'size_overflow_discarded', 'blob_scan_blocked', 'queue_backpressure_drop', 'persistence_failure', 'unsupported_native_value', 'source_rejection', 'filter_limit_exclusion', 'missing_parent_context', 'parser_error_malformed_bytes', 'crash_recovery', 'uncertain_tail', 'shutdown_timeout', 'turn_order_ambiguous']
+LossReason = Literal['credential_redaction', 'configured_redaction', 'scrubber_failure_payload_omitted', 'serialization_failure', 'unsafe_getter_avoided', 'unsafe_helper_avoided', 'size_overflow_blobbed', 'size_overflow_discarded', 'blob_scan_blocked', 'queue_backpressure_drop', 'persistence_failure', 'unsupported_native_value', 'source_rejection', 'filter_limit_exclusion', 'missing_parent_context', 'parser_error_malformed_bytes', 'missing_correlation_identity', 'crash_recovery', 'uncertain_tail', 'shutdown_timeout', 'turn_order_ambiguous']
 Bounded = Annotated[str, StringConstraints(min_length=1, max_length=512)]
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 CaptureId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_:-]{7,127}$")]

@@ -1509,6 +1509,54 @@
       ]
     },
     {
+      "name": "protected run correlation projects onto the root start",
+      "events": [
+        {
+          "record_id": "rec_run_correlation",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "correlated run",
+          "run_correlation": {
+            "task_id": "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "execution": {
+              "system": "trigger.dev",
+              "run_id": "exec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "parent_run_id": "exec_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "root_run_id": "exec_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "attempt": 0
+            }
+          },
+          "semantic": {
+            "type": "agent.run",
+            "name": "correlated run"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_run_correlation",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "correlated run",
+            "correlation": {
+              "task_id": "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "execution": {
+                "system": "trigger.dev",
+                "run_id": "exec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "parent_run_id": "exec_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "root_run_id": "exec_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "attempt": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "external previous turn remains bundle-local metadata",
       "events": [
         {

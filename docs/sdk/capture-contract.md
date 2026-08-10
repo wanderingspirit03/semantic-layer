@@ -53,6 +53,33 @@ links only to an exact earlier `model.response` or `tool.result`. An invalid
 receipt produces a named loss. The SDK never pairs records by order, time,
 name, or similar content.
 
+## Cross process correlation
+
+Separate processes produce separate bundles. A caller can give `observe()` or
+`openTrace()` exact task and execution identities through the `correlation`
+option. The execution identity includes a system name, the current run ID, and
+optional parent run ID, root run ID, and attempt number.
+
+The SDK protects every task and run ID with HMAC before it writes the bundle.
+The raw values do not appear in `trace.jsonl`. Current, parent, and root run IDs
+use the same protection domain for one execution system. This lets a reader
+match a child parent ID to the exact current ID in its parent bundle.
+
+Related bundles must use the same explicit `identityKey`. The default identity
+key is private to one capture session, so it cannot join separate bundles. Use
+a separate stable key for each tenant. Treat that key as a secret and pass it
+through trusted server configuration, not a task payload.
+
+A retry keeps the same protected run ID and uses a different attempt number. A
+replay with a new native run ID remains a distinct run. The SDK does not infer
+a replay relation when the integration does not expose one.
+
+If the required task ID or current run ID is invalid, capture keeps the run,
+omits the correlation object, and records `missing_correlation_identity`.
+Missing optional parent or root IDs are normal when the integration does not
+expose them. Invalid optional values are omitted and recorded as capture input
+losses.
+
 ## Models and messages
 
 A complete model operation uses this relation:

@@ -16,6 +16,7 @@ import {
 } from './bundles.js';
 import { configPath, getEnvironment, saveEnvironment } from './config.js';
 import { GcsReadOnlyStore, WRITE_PERMISSIONS, type ReadOnlyStore } from './store.js';
+import { findRelatedBundles, type RelatedReport } from './related.js';
 import { contentRecords, formatSummary, summarize, type TraceSummary } from './summary.js';
 
 type Streams = { out: (text: string) => void; error: (text: string) => void; isTTY: boolean };
@@ -55,6 +56,7 @@ export async function main(argv = process.argv.slice(2), injected: Partial<Runti
     if (command === 'sync') return await sync(parsed, runtime);
     if (command === 'list') return await list(parsed, runtime);
     if (command === 'show') return await show(parsed, runtime);
+    if (command === 'related') return await related(parsed, runtime);
     throw usageError(`unknown command: ${command}`);
   } catch (error) {
     let message = error instanceof Error ? error.message : String(error);
@@ -234,6 +236,43 @@ async function show(parsed: Parsed, runtime: Runtime): Promise<number> {
   return validation.valid ? 0 : 1;
 }
 
+async function related(parsed: Parsed, runtime: Runtime): Promise<number> {
+  const scope = positional(parsed, 0, 'tenant/installation/bundle');
+  noExtraPositionals(parsed, 1);
+  onlyFlags(parsed, ['environment', 'json', 'root']);
+  const environment = optionalFlag(parsed, 'environment') ?? 'staging';
+  const config = await getEnvironment(environment, runtime.configFile);
+  const parts = scope.split('/');
+  if (parts.length !== 3 || parts.some((part) => !part || part === '.' || part === '..')) {
+    throw usageError('related scope must be tenant/installation/bundle');
+  }
+  const seedRoot = optionalFlag(parsed, 'root');
+  const report = await findRelatedBundles({
+    output: config.output,
+    tenant: parts[0]!,
+    seedScope: scope,
+    ...(seedRoot ? { seedRoot } : {}),
+  });
+  writeResult(runtime, parsed, report, formatRelated(report));
+  return 0;
+}
+
+function formatRelated(report: RelatedReport): string {
+  const lines = [
+    `Related local runs for ${report.seed.scope} root=${report.seed.root ?? 'unselected'}`,
+    ...report.nodes.map((node) => (
+      `  NODE ${node.scope} root=${node.root} system=${node.system} attempt=${node.attempt ?? 'unknown'} retry=${node.retry ? 'yes' : 'no'}`
+    )),
+    ...report.edges.map((edge) => (
+      `  EDGE ${edge.type} ${edge.from.scope}#${edge.from.root} -> ${edge.to.scope}#${edge.to.root}`
+    )),
+    ...report.warnings.map((warning) => (
+      `  WARN ${warning.code} ${warning.scope}${warning.root ? ` root=${warning.root}` : ''}`
+    )),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
 async function localSummary(path: string, root: string): Promise<TraceSummary> {
   const relative = path.slice(resolve(root).length + 1).split(sep);
   const validation = await validateArtifact(path);
@@ -335,7 +374,7 @@ function jsonText(value: unknown): string {
 export function helpText(command?: string): string {
   const header = `semantic-layer-traces${command ? ` ${command}` : ''}\n\n`;
   if (command) return `${header}${commandHelp(command)}`;
-  return `${header}Read only access to completed Semantic Layer traces in Google Cloud Storage.\n\nWorkflow\n  1. Sign in: gcloud auth application-default login\n  2. Configure: semantic-layer-traces configure staging --project <PROJECT> --bucket <BUCKET> --output <PRIVATE_DIRECTORY> --json\n  3. Check access: semantic-layer-traces doctor --environment staging --json\n  4. Find customers: semantic-layer-traces tenants --environment staging --json\n  5. Find VMs: semantic-layer-traces installations --environment staging --tenant <TENANT> --json\n  6. Sync traces: semantic-layer-traces sync --environment staging --tenant <TENANT> --json\n  7. Inspect safely: semantic-layer-traces list --environment staging --tenant <TENANT> --json\n  8. Optional detail: semantic-layer-traces show <TENANT>/<INSTALLATION>/<BUNDLE> --environment staging --summary-only --json\n\nFor coding agents\n  The commands above are the complete safe workflow. Configure creates its directories.\n  Use list for normal summaries. Show is optional. Do not pass --include-content.\n  Set SEMANTIC_LAYER_TRACES_CONFIG to use a nondefault config file.\n\nCommands\n  configure      Save nonsecret project, bucket, and local output settings\n  doctor         Check GCP read access and local permissions without writing to GCP\n  tenants        Discover tenants that have completed bundles\n  installations  List VM installation IDs for one tenant\n  sync           Download and validate all completed bundles for one tenant\n  list           Summarize validated local bundles without private content\n  show           Show one local bundle; content is hidden in scripts and JSON by default\n\nGlobal behavior\n  --json          Stable machine readable output\n  --help          Command help\n\nTrace content is private plaintext. Keep exports outside repositories. There are no upload or delete commands.\n`;
+  return `${header}Read only access to completed Semantic Layer traces in Google Cloud Storage.\n\nWorkflow\n  1. Sign in: gcloud auth application-default login\n  2. Configure: semantic-layer-traces configure staging --project <PROJECT> --bucket <BUCKET> --output <PRIVATE_DIRECTORY> --json\n  3. Check access: semantic-layer-traces doctor --environment staging --json\n  4. Find customers: semantic-layer-traces tenants --environment staging --json\n  5. Find VMs: semantic-layer-traces installations --environment staging --tenant <TENANT> --json\n  6. Sync traces: semantic-layer-traces sync --environment staging --tenant <TENANT> --json\n  7. Inspect safely: semantic-layer-traces list --environment staging --tenant <TENANT> --json\n  8. Correlate safely: semantic-layer-traces related <TENANT>/<INSTALLATION>/<BUNDLE> --environment staging --json\n  9. Optional detail: semantic-layer-traces show <TENANT>/<INSTALLATION>/<BUNDLE> --environment staging --summary-only --json\n\nFor coding agents\n  The commands above are the complete safe workflow. Configure creates its directories.\n  Use list for normal summaries and related for exact cross-bundle structure. Show is optional. Do not pass --include-content.\n  Related never prints protected task or run identities.\n  Set SEMANTIC_LAYER_TRACES_CONFIG to use a nondefault config file.\n\nCommands\n  configure      Save nonsecret project, bucket, and local output settings\n  doctor         Check GCP read access and local permissions without writing to GCP\n  tenants        Discover tenants that have completed bundles\n  installations  List VM installation IDs for one tenant\n  sync           Download and validate all completed bundles for one tenant\n  list           Summarize validated local bundles without private content\n  related        Show exact cross-bundle structure without protected identities or content\n  show           Show one local bundle; content is hidden in scripts and JSON by default\n\nGlobal behavior\n  --json          Stable machine readable output\n  --help          Command help\n\nTrace content is private plaintext. Keep exports outside repositories. There are no upload or delete commands.\n`;
 }
 
 function commandHelp(command: string): string {
@@ -346,6 +385,7 @@ function commandHelp(command: string): string {
     installations: 'Usage: semantic-layer-traces installations --tenant <TENANT> [--environment staging] [--json]\nInstallation IDs distinguish separate OpenClaw VMs.\n',
     sync: 'Usage: semantic-layer-traces sync --tenant <TENANT> [--environment staging] [--json]\nSafe to repeat. Existing matching bundles are skipped. Conflicts are never overwritten.\n',
     list: 'Usage: semantic-layer-traces list [--tenant <TENANT>] [--environment staging] [--json]\nNever prints prompts, reasoning, tool input, or tool output.\n',
+    related: 'Usage: semantic-layer-traces related <TENANT>/<INSTALLATION>/<BUNDLE> [--root <RUN_START_RECORD_ID>] [--environment staging] [--json]\nScans validated local bundles in the same tenant. Prints safe bundle/root structure, systems, attempts, exact edges, and warning codes. Never prints protected task or run identities or private trace content.\n',
     show: 'Usage: semantic-layer-traces show <TENANT>/<INSTALLATION>/<BUNDLE> [--environment staging] [--summary-only] [--include-content] [--json]\nInteractive output includes private content unless --summary-only is used. Noninteractive and JSON output hide content unless --include-content is explicit.\n',
   };
   if (!usage[command]) throw usageError(`unknown command: ${command}`);

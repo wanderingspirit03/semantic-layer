@@ -12,6 +12,11 @@ bundles in Google Cloud Storage.
 - Keep prompts, reasoning, model output, tool input, and tool output out of
   noninteractive and JSON output unless the caller explicitly asks for
   content. Interactive `show` includes content by default and must warn first.
+- Keep protected correlation task, run, parent, and root identities out of all
+  `related` output, including JSON. Compare them only for exact equality. Never
+  infer a relation from names, content, timestamps, or record order.
+- Resolve execution references by exact system and protected run identity. If
+  more than one attempt matches, report ambiguity and do not choose an edge.
 - Never place config files, state files, or summaries inside downloaded bundles.
 - Keep `--help`, `README.md`, tests, and behavior aligned.
 - Run `pnpm --filter semantic-layer-traces test`, `typecheck`, and `build`, then

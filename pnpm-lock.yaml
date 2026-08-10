@@ -221,7 +221,7 @@ importers:
         specifier: ^7.16.0
         version: 7.21.0
       semantic-layer-capture:
-        specifier: 0.2.0-beta.0
+        specifier: 0.2.0-beta.1
         version: link:../sdk
     devDependencies:
       '@types/node':

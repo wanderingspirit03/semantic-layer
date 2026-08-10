@@ -189,6 +189,177 @@ describe('runtime production guarantees', () => {
     expect(secondStart.data.turn_id).not.toBe(firstStart.data.turn_id);
   });
 
+  it('keeps protected task and execution identities joinable across bundles', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-run-correlation-'));
+    const identityKey = 'fixture-run-correlation-key-32-bytes';
+    const parent = createCapture({
+      output,
+      serviceName: 'runtime-run-correlation',
+      identityKey,
+    });
+    const child = createCapture({
+      output,
+      serviceName: 'runtime-run-correlation',
+      identityKey,
+    });
+
+    await parent.observe('ralph-loop', {
+      correlation: {
+        taskId: 'research-task-private',
+        execution: {
+          system: 'trigger.dev',
+          runId: 'trigger-parent-private',
+          rootRunId: 'trigger-parent-private',
+          attempt: 1,
+        },
+      },
+    }, async () => 'parent');
+    await child.observe('search-loop', {
+      correlation: {
+        taskId: 'research-task-private',
+        execution: {
+          system: 'trigger.dev',
+          runId: 'trigger-child-private',
+          parentRunId: 'trigger-parent-private',
+          rootRunId: 'trigger-parent-private',
+          attempt: 1,
+        },
+      },
+    }, async () => 'child');
+
+    const [parentClosed, childClosed] = await Promise.all([
+      parent.shutdown(),
+      child.shutdown(),
+    ]);
+    const [parentText, childText] = await Promise.all([
+      readFile(join(parentClosed.artifactPath, 'trace.jsonl'), 'utf8'),
+      readFile(join(childClosed.artifactPath, 'trace.jsonl'), 'utf8'),
+    ]);
+    const parentStart = parentText.trim().split('\n').map((line) => JSON.parse(line))
+      .find((row) => row.kind === 'run.start');
+    const childStart = childText.trim().split('\n').map((line) => JSON.parse(line))
+      .find((row) => row.kind === 'run.start');
+
+    expect(childStart.data.correlation).toMatchObject({
+      task_id: parentStart.data.correlation.task_id,
+      execution: {
+        system: 'trigger.dev',
+        parent_run_id: parentStart.data.correlation.execution.run_id,
+        root_run_id: parentStart.data.correlation.execution.run_id,
+        attempt: 1,
+      },
+    });
+    expect(childStart.data.correlation.execution.run_id)
+      .not.toBe(parentStart.data.correlation.execution.run_id);
+    expect(`${parentText}\n${childText}`).not.toContain('research-task-private');
+    expect(`${parentText}\n${childText}`).not.toContain('trigger-parent-private');
+    await expect(Promise.all([
+      validateArtifact(parentClosed.artifactPath),
+      validateArtifact(childClosed.artifactPath),
+    ])).resolves.toEqual([
+      expect.objectContaining({ valid: true, issues: [] }),
+      expect.objectContaining({ valid: true, issues: [] }),
+    ]);
+  });
+
+  it('keeps the run and names a loss when required correlation identities are missing', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-run-correlation-gap-'));
+    const capture = createCapture({
+      output,
+      serviceName: 'runtime-run-correlation-gap',
+      identityKey: 'fixture-run-correlation-gap-key',
+    });
+
+    await capture.observe('ralph-loop', {
+      correlation: {
+        taskId: '',
+        execution: { system: 'trigger.dev', runId: '' },
+      },
+    }, async () => 'customer-result');
+
+    const closed = await capture.shutdown();
+    const rows = await traceRows(closed.artifactPath);
+    expect(rows.find((row) => row.kind === 'run.start')?.data)
+      .not.toHaveProperty('correlation');
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loss',
+        data: expect.objectContaining({
+          reason: 'missing_correlation_identity',
+          count: 2,
+        }),
+      }),
+    ]));
+    await expect(validateArtifact(closed.artifactPath))
+      .resolves.toMatchObject({ valid: true, issues: [] });
+  });
+
+  it('keeps valid correlation when an optional execution relation is invalid', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-optional-correlation-gap-'));
+    const capture = createCapture({
+      output,
+      serviceName: 'runtime-optional-correlation-gap',
+      identityKey: 'fixture-optional-correlation-gap-key',
+    });
+
+    await capture.observe('search-loop', {
+      correlation: {
+        taskId: 'research-task-private',
+        execution: {
+          system: 'trigger.dev',
+          runId: 'trigger-child-private',
+          parentRunId: '',
+          rootRunId: 'trigger-root-private',
+          attempt: 1,
+        },
+      },
+    }, async () => 'customer-result');
+
+    const closed = await capture.shutdown();
+    const rows = await traceRows(closed.artifactPath);
+    const start = rows.find((row) => row.kind === 'run.start');
+    const correlation = start?.data.correlation as Record<string, any> | undefined;
+    expect(correlation).toMatchObject({
+      execution: { system: 'trigger.dev', attempt: 1 },
+    });
+    expect(correlation?.execution).not.toHaveProperty('parent_run_id');
+    expect(correlation?.execution).toHaveProperty('root_run_id');
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loss',
+        data: expect.objectContaining({ reason: 'serialization_failure', count: 1 }),
+      }),
+    ]));
+    await expect(validateArtifact(closed.artifactPath))
+      .resolves.toMatchObject({ valid: true, issues: [] });
+  });
+
+  it('records an observed cooperative cancellation without changing the thrown value', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-cooperative-cancel-'));
+    const capture = createCapture({ output, serviceName: 'runtime-cooperative-cancel' });
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('cancelled by caller'), { name: 'AbortError' });
+
+    const running = capture.observe('cancelled-work', {
+      cancellationSignal: controller.signal,
+    }, async () => await new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener('abort', () => reject(cancellation), { once: true });
+    }));
+    controller.abort();
+
+    await expect(running).rejects.toBe(cancellation);
+    const closed = await capture.shutdown();
+    const rows = await traceRows(closed.artifactPath);
+    expect(rows).toContainEqual(expect.objectContaining({
+      kind: 'run.outcome',
+      data: expect.objectContaining({ status: 'cancelled' }),
+    }));
+    expect(rows).not.toContainEqual(expect.objectContaining({
+      kind: 'run.outcome',
+      data: expect.objectContaining({ status: 'failed' }),
+    }));
+  });
+
   it('keeps raw conversation and turn identities valid for arbitrary input', async () => {
     const output = await mkdtemp(join(tmpdir(), 'semantic-runtime-raw-identities-'));
     const capture = initialize({

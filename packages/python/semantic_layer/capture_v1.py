@@ -74,6 +74,7 @@ LOSS_REASONS = (
     "filter_limit_exclusion",
     "missing_parent_context",
     "parser_error_malformed_bytes",
+    "missing_correlation_identity",
     "crash_recovery",
     "uncertain_tail",
     "shutdown_timeout",
@@ -96,6 +97,22 @@ SourceEventPhase = Literal["start", "event", "end", "error", "cancelled", "gap"]
 
 # Immutable mapping with required run_id/trace_id and the runtime-issued operation_id.
 TraceIdentity: TypeAlias = Mapping[str, str]
+
+
+class _RunExecutionCorrelationOptional(TypedDict, total=False):
+    parent_run_id: str
+    root_run_id: str
+    attempt: int
+
+
+class RunExecutionCorrelation(_RunExecutionCorrelationOptional):
+    system: str
+    run_id: str
+
+
+class RunCorrelationInput(TypedDict):
+    task_id: str
+    execution: RunExecutionCorrelation
 
 
 class _SourceRecordOptional(TypedDict, total=False):
@@ -126,6 +143,7 @@ class _OpenTraceRecordOptional(TypedDict, total=False):
     parent_context: dict[str, Any]
     native: Any
     semantic: dict[str, Any]
+    correlation: RunCorrelationInput
 
 
 class OpenTraceRecord(_OpenTraceRecordOptional):
@@ -1887,6 +1905,7 @@ class _SourceSink:
         )
         source_identities = self.runtime.turn_identity(captured)
         identities = {**source_identities, **ambient.identities} if ambient else source_identities
+        run_correlation = self.runtime.protect_run_correlation(captured.get("correlation"))
         coverage_identity = None
         if not any(field_name.startswith("coverage") for field_name, _error in faults):
             coverage_identity = self.runtime.coverage_registry.coverage_identity(
@@ -1921,6 +1940,7 @@ class _SourceSink:
                     ),
                     "native": captured.get("native"),
                     "semantic": captured.get("semantic"),
+                    "run_correlation": run_correlation,
                     "parent_record_id": ambient.parent_record_id if ambient else None,
                     "traceparent": parent_context.traceparent,
                 },
@@ -2235,6 +2255,135 @@ def _source_value(
         return False, None
 
 
+class _MissingCorrelationIdentityError(TypeError):
+    pass
+
+
+def _snapshot_run_correlation_input(
+    value: object,
+    faults: list[tuple[str, BaseException]],
+) -> RunCorrelationInput | None:
+    if type(value) not in {dict, MappingProxyType}:
+        faults.append(("correlation", TypeError("correlation must be a mapping")))
+        return None
+
+    task_ok, task_id = _source_value(value, "task_id", faults)
+    execution_ok, execution = _source_value(value, "execution", faults)
+    task_valid = (
+        task_ok
+        and isinstance(task_id, str)
+        and bool(task_id.strip())
+        and len(task_id) <= MAX_BOUNDED_CHARS
+    )
+    if not task_valid:
+        faults.append(
+            (
+                "correlation.task_id",
+                _MissingCorrelationIdentityError(
+                    "task_id must be a non-empty string of at most 512 characters"
+                ),
+            )
+        )
+    if not execution_ok or type(execution) not in {dict, MappingProxyType}:
+        faults.append(
+            ("correlation.execution", TypeError("execution must be a mapping"))
+        )
+        return None
+
+    system_ok, system = _source_value(execution, "system", faults)
+    run_ok, run_id = _source_value(execution, "run_id", faults)
+    parent_ok, parent_run_id = _source_value(execution, "parent_run_id", faults)
+    root_ok, root_run_id = _source_value(execution, "root_run_id", faults)
+    attempt_ok, attempt = _source_value(execution, "attempt", faults)
+
+    system_valid = (
+        system_ok
+        and isinstance(system, str)
+        and re.fullmatch(r"[a-z][a-z0-9._:-]{2,127}", system) is not None
+    )
+    if not system_valid:
+        faults.append(
+            (
+                "correlation.execution.system",
+                TypeError("system must be a lowercase identifier of 3 to 128 characters"),
+            )
+        )
+    run_valid = (
+        run_ok
+        and isinstance(run_id, str)
+        and bool(run_id.strip())
+        and len(run_id) <= MAX_BOUNDED_CHARS
+    )
+    if not run_valid:
+        faults.append(
+            (
+                "correlation.execution.run_id",
+                _MissingCorrelationIdentityError(
+                    "run_id must be a non-empty string of at most 512 characters"
+                ),
+            )
+        )
+
+    optional_values = (
+        ("parent_run_id", parent_ok, parent_run_id),
+        ("root_run_id", root_ok, root_run_id),
+    )
+    optional_values_valid: dict[str, str] = {}
+    for field_name, observed, field_value in optional_values:
+        valid = (
+            not observed
+            or field_value is None
+            or (
+                isinstance(field_value, str)
+                and bool(field_value.strip())
+                and len(field_value) <= MAX_BOUNDED_CHARS
+            )
+        )
+        if not valid:
+            faults.append(
+                (
+                    f"correlation.execution.{field_name}",
+                    TypeError(
+                        f"{field_name} must be a non-empty string of at most 512 characters"
+                    ),
+                )
+            )
+        elif observed and isinstance(field_value, str):
+            optional_values_valid[field_name] = field_value
+    attempt_valid = (
+        not attempt_ok
+        or attempt is None
+        or (
+            type(attempt) is int
+            and 0 <= attempt <= (1 << 53) - 1
+        )
+    )
+    if not attempt_valid:
+        faults.append(
+            (
+                "correlation.execution.attempt",
+                TypeError("attempt must be a non-negative safe integer"),
+            )
+        )
+
+    if not all((task_valid, system_valid, run_valid)):
+        return None
+    captured_execution: RunExecutionCorrelation = {
+        "system": cast(str, system),
+        "run_id": cast(str, run_id),
+    }
+    if "parent_run_id" in optional_values_valid:
+        captured_execution["parent_run_id"] = optional_values_valid["parent_run_id"]
+    if "root_run_id" in optional_values_valid:
+        captured_execution["root_run_id"] = optional_values_valid["root_run_id"]
+    if attempt_valid and attempt is not None:
+        captured_execution["attempt"] = cast(int, attempt)
+    return {
+        "task_id": cast(str, task_id),
+        "execution": captured_execution,
+    }
+
+
 def _snapshot_open_trace_input(
     value: object, faults: list[tuple[str, BaseException]]
 ) -> dict[str, Any]:
@@ -2250,6 +2399,7 @@ def _snapshot_open_trace_input(
         "native",
         "semantic",
         "coverage",
+        "correlation",
     ):
         ok, child = _source_value(value, key, faults)
         if ok and child is not None:
@@ -2281,6 +2431,12 @@ def _snapshot_open_trace_input(
     if "semantic" in captured and type(captured["semantic"]) is not dict:
         faults.append(("semantic", TypeError("semantic must be a mapping")))
         captured.pop("semantic")
+    if "correlation" in captured:
+        correlation = _snapshot_run_correlation_input(captured["correlation"], faults)
+        if correlation is None:
+            captured.pop("correlation")
+        else:
+            captured["correlation"] = correlation
     return captured
 
 
@@ -2712,6 +2868,13 @@ class _Observation(Generic[R]):
         self.runtime = runtime
         self.name = name
         self.options = options
+        self.input_faults: list[tuple[str, BaseException]] = []
+        correlation = options.get("correlation")
+        self.run_correlation = runtime.protect_run_correlation(
+            _snapshot_run_correlation_input(correlation, self.input_faults)
+            if correlation is not None
+            else None
+        )
         self.trace = {"run_id": runtime.artifact.run_id, "trace_id": _id("trace")}
         self.identities = runtime.turn_identity(options)
         self.scope = ObservationScope(runtime, self.trace, self.identities)
@@ -2736,11 +2899,19 @@ class _Observation(Generic[R]):
                     "name": self.name,
                     "input": self.options.get("input"),
                 },
+                "run_correlation": self.run_correlation,
                 "traceparent": self.parent_context.traceparent,
             },
             self.identities,
         )
         self.scope.parent_record_id = receipt.record_id
+        self.runtime.record_capture_input_faults(
+            self.input_faults,
+            self.trace,
+            self.identities,
+            receipt.record_id,
+            self.parent_context.traceparent,
+        )
         self.runtime.record_context_gap(
             self.parent_context, self.trace, self.identities, receipt.record_id
         )
@@ -3554,6 +3725,11 @@ class _Runtime:
             {
                 "trace_id": trace["trace_id"],
                 **(identities or {}),
+                **(
+                    {"run_correlation": value["run_correlation"]}
+                    if value.get("run_correlation")
+                    else {}
+                ),
                 "source": {
                     "name": metadata["name"],
                     "seam": metadata["seam"],
@@ -3681,7 +3857,11 @@ class _Runtime:
             identities,
         )
         settlements = [gap.settled]
+        missing_correlation_count = 0
         for fault_field, _error in faults:
+            if isinstance(_error, _MissingCorrelationIdentityError):
+                missing_correlation_count += 1
+                continue
             settlements.append(
                 self.artifact.record_loss(
                     "serialization_failure",
@@ -3692,7 +3872,59 @@ class _Runtime:
                     gap.record_id or affected_record_id,
                 ).settled
             )
+        if missing_correlation_count:
+            settlements.append(
+                self.artifact.record_loss(
+                    "missing_correlation_identity",
+                    trace["trace_id"],
+                    "/run_correlation",
+                    gap.record_id or affected_record_id,
+                    count=missing_correlation_count,
+                ).settled
+            )
         return _Settled.combine(settlements)
+
+    def protect_run_correlation(
+        self, value: RunCorrelationInput | None
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+
+        system = value["execution"]["system"]
+
+        def execution_identity(run_id: str) -> str:
+            digest = hmac.new(self.identity_key, digestmod=hashlib.sha256)
+            digest.update(system.encode())
+            digest.update(b"\0run\0")
+            digest.update(run_id.encode())
+            return f"exec_{digest.hexdigest()}"
+
+        task_digest = hmac.new(self.identity_key, digestmod=hashlib.sha256)
+        task_digest.update(b"task\0")
+        task_digest.update(value["task_id"].encode())
+        execution = value["execution"]
+        return {
+            "task_id": f"task_{task_digest.hexdigest()}",
+            "execution": {
+                "system": system,
+                "run_id": execution_identity(execution["run_id"]),
+                **(
+                    {"parent_run_id": execution_identity(execution["parent_run_id"])}
+                    if execution.get("parent_run_id")
+                    else {}
+                ),
+                **(
+                    {"root_run_id": execution_identity(execution["root_run_id"])}
+                    if execution.get("root_run_id")
+                    else {}
+                ),
+                **(
+                    {"attempt": execution["attempt"]}
+                    if execution.get("attempt") is not None
+                    else {}
+                ),
+            },
+        }
 
     def turn_identity(self, value: dict[str, Any]) -> dict[str, Any]:
         def identifier(prefix: str, raw: str) -> str:

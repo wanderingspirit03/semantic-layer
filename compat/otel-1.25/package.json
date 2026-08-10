@@ -1,0 +1,17 @@
+{
+  "name": "semantic-layer-otel-1-25-compat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.52.1",
+    "@opentelemetry/sdk-trace-base": "1.25.1",
+    "semantic-layer-capture": "link:../../packages/sdk"
+  },
+  "devDependencies": {
+    "vitest": "1.6.1"
+  }
+}

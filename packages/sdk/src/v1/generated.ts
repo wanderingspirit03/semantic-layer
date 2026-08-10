@@ -1,5 +1,5 @@
 /* eslint-disable */
-/** Generated from semantic_capture_event_v1. Schema digest: 4026f827aa6f5009f66deae75f8659e214b3a54fa4d38d128a215a381ea8db91. */
+/** Generated from semantic_capture_event_v1. Schema digest: 800b1cf814c0c367b3d6eda085481b904d516e2d9983d2acc59c484f123851fe. */
 
 export type SemanticCaptureEventV1 = {
   [k: string]: unknown;
@@ -15,6 +15,7 @@ export type SemanticCaptureEventV1 = {
   turn_id?: Id;
   turn_index?: number;
   previous_turn_id?: Id;
+  run_correlation?: RunCorrelation;
   source: {
     source_id: SourceId;
     name: Bounded;
@@ -124,6 +125,7 @@ export type LossReason =
   | 'filter_limit_exclusion'
   | 'missing_parent_context'
   | 'parser_error_malformed_bytes'
+  | 'missing_correlation_identity'
   | 'crash_recovery'
   | 'uncertain_tail'
   | 'shutdown_timeout'
@@ -181,6 +183,20 @@ export type OwnershipDecision =
       final: true;
     };
 
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "run_correlation".
+ */
+export interface RunCorrelation {
+  task_id: Id;
+  execution: {
+    system: string;
+    run_id: Id;
+    parent_run_id?: Id;
+    root_run_id?: Id;
+    attempt?: number;
+  };
+}
 /**
  * This interface was referenced by `undefined`'s JSON-Schema
  * via the `definition` "coverage_identity".

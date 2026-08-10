@@ -113,6 +113,40 @@ semantic-layer-traces show \
   --summary-only
 ```
 
+Show exact cross-bundle structure for one local task:
+
+```sh
+semantic-layer-traces related \
+  "<TENANT_ID>/<INSTALLATION_ID>/<BUNDLE_ID>" \
+  --environment staging
+```
+
+`related` scans only validated local bundles for the same tenant. It groups
+roots only when their protected task identities are exactly equal. Its human
+and JSON output never contains protected task or run identities, prompts,
+results, errors, or other private trace content. It shows only bundle scopes,
+`run.start` record IDs, safe system names, attempts, exact parent and root
+edges, and safe warning codes.
+
+Parent and root references match only when both the execution system and
+protected run identity are exactly equal. If that identity has more than one
+retry attempt, the reference is reported as ambiguous and no attempt edge is
+invented.
+
+If the seed bundle contains more than one `run.start`, select one exactly:
+
+```sh
+semantic-layer-traces related \
+  "<TENANT_ID>/<INSTALLATION_ID>/<BUNDLE_ID>" \
+  --root "<RUN_START_RECORD_ID>" \
+  --environment staging \
+  --json
+```
+
+Retries remain separate attempt nodes. Replays with distinct protected run
+identities remain distinct bundle/root nodes under the same task. The command
+does not infer relations from names, content, timestamps, or record order.
+
 An interactive `show` prints private trace content by default after a warning.
 When output is redirected or `--json` is used, content stays hidden unless you
 pass `--include-content`.

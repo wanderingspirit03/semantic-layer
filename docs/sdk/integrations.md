@@ -22,7 +22,7 @@ the version, the manifest records the version as unknown.
 | LangGraph | `langGraphAdapter` | `official:langgraph-js` | `1.4.7`, `1.4.6` |
 | Mastra | `mastraAdapter` | `official:mastra` | `1.50.1`, `1.50.0` |
 | Strands | `strandsAdapter` | `official:strands-js` | `1.9.0`, `1.8.0` |
-| OpenTelemetry | `createOpenTelemetrySource` | `generic:otel` | API `1.9.1`, tracing `2.9.0`, logs `0.220.0` |
+| OpenTelemetry | `createOpenTelemetrySource` | `generic:otel` | API `1.9.1`, tracing `2.9.0`, logs `0.220.0`; API `1.9.0`, tracing `1.25.1`, OTLP HTTP exporter `0.52.1` |
 
 ## Python
 

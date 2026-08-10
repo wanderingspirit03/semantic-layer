@@ -1,0 +1,8 @@
+{
+  "name": "semantic-layer-tavi-trigger-attempt-example",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@trigger.dev/sdk": "4.4.4"
+  }
+}
