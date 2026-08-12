@@ -1519,7 +1519,7 @@
           "run_correlation": {
             "task_id": "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "execution": {
-              "system": "trigger.dev",
+              "system": "job-runner",
               "run_id": "exec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
               "parent_run_id": "exec_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
               "root_run_id": "exec_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -1545,7 +1545,7 @@
             "correlation": {
               "task_id": "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "execution": {
-                "system": "trigger.dev",
+                "system": "job-runner",
                 "run_id": "exec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "parent_run_id": "exec_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                 "root_run_id": "exec_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",

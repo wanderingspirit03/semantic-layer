@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createPluginDefinition,
   type PluginDependencies,
@@ -9,6 +9,10 @@ type Handler = (
   event: Record<string, unknown>,
   context: Record<string, unknown>,
 ) => unknown;
+type GatewayHandler = (input: {
+  params: Record<string, unknown>;
+  respond(ok: boolean, payload?: unknown): void;
+}) => unknown;
 
 describe('OpenClaw run capture', () => {
   it('persists exact qualification for both exercised hosts', async () => {
@@ -153,6 +157,107 @@ describe('OpenClaw run capture', () => {
     expect(JSON.stringify(harness.records)).not.toContain(
       'ingest-secret-value',
     );
+  });
+
+  it('consumes an admin-bound research task ID when the matching run starts', async () => {
+    const harness = captureHarness();
+    const { handlers, bindCorrelation } = registerHarness(harness.dependencies);
+    const context = {
+      runId: 'run-correlated',
+      sessionId: 'session-correlated',
+    };
+
+    expect(bindCorrelation({
+      runId: context.runId,
+      taskId: 'research-correlated',
+    })).toEqual({ accepted: true });
+    expect(bindCorrelation({
+      runId: context.runId,
+      taskId: 'research-correlated',
+    })).toEqual({ accepted: true });
+    expect(bindCorrelation({
+      runId: context.runId,
+      taskId: 'conflicting-research',
+    })).toEqual({ accepted: false, reason: 'conflict' });
+
+    handlers.before_model_resolve!(
+      { runId: context.runId, prompt: 'start' },
+      context,
+    );
+    expect(bindCorrelation({
+      runId: context.runId,
+      taskId: 'research-correlated',
+    })).toEqual({ accepted: false, reason: 'run_active' });
+    await handlers.agent_end!({ runId: context.runId, success: true }, context);
+    expect(bindCorrelation({
+      runId: context.runId,
+      taskId: 'research-correlated',
+    })).toEqual({ accepted: false, reason: 'run_consumed' });
+
+    expect(harness.captureOptions).toContainEqual(expect.objectContaining({
+      identityKey: 'identity-secret-value-which-is-long-enough',
+    }));
+    expect(harness.opened).toContainEqual(expect.objectContaining({
+      correlation: {
+        taskId: 'research-correlated',
+        execution: {
+          system: 'openclaw',
+          runId: context.runId,
+          rootRunId: context.runId,
+        },
+      },
+    }));
+    expect(bindCorrelation({ runId: '', taskId: 'research' }))
+      .toEqual({ accepted: false, reason: 'invalid_request' });
+
+    for (let index = 0; index < 1_024; index += 1) {
+      expect(bindCorrelation({
+        runId: `pending-${index}`,
+        taskId: `research-${index}`,
+      })).toEqual({ accepted: true });
+    }
+    expect(bindCorrelation({ runId: 'pending-over-capacity', taskId: 'research' }))
+      .toEqual({ accepted: false, reason: 'capacity_reached' });
+  });
+
+  it('does not attach an expired in-memory correlation binding', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-12T12:00:00Z'));
+      const harness = captureHarness();
+      const { handlers, bindCorrelation } = registerHarness(harness.dependencies);
+      expect(bindCorrelation({ runId: 'run-expired', taskId: 'research-expired' }))
+        .toEqual({ accepted: true });
+
+      vi.setSystemTime(new Date('2026-08-12T12:05:01Z'));
+      handlers.before_model_resolve!(
+        { runId: 'run-expired', prompt: 'start' },
+        { runId: 'run-expired', sessionId: 'session-expired' },
+      );
+
+      expect(harness.opened[0]).not.toHaveProperty('correlation');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains a binding and tears down capture when the run root is rejected', async () => {
+    const harness = captureHarness({ rejectOpen: true });
+    const { handlers, bindCorrelation } = registerHarness(harness.dependencies);
+    expect(bindCorrelation({ runId: 'run-rejected', taskId: 'research-rejected' }))
+      .toEqual({ accepted: true });
+
+    handlers.before_model_resolve!(
+      { runId: 'run-rejected', prompt: 'start' },
+      { runId: 'run-rejected', sessionId: 'session-rejected' },
+    );
+    await vi.waitFor(() => {
+      expect(harness.lifecycleDeactivations).toEqual(['/sealed/run-a']);
+      expect(harness.shutdowns).toEqual(['/sealed/run-a']);
+    });
+
+    expect(bindCorrelation({ runId: 'run-rejected', taskId: 'research-rejected' }))
+      .toEqual({ accepted: true });
   });
 
   it('keeps local capture and sealing active when the durable spool is full', async () => {
@@ -1563,6 +1668,7 @@ function registerHarness(
 ) {
   const handlers: Partial<Record<string, Handler>> = {};
   const errors: string[] = [];
+  let gatewayHandler: GatewayHandler | undefined;
   const plugin = createPluginDefinition(dependencies, { terminalGraceMs: 0 });
   plugin.register({
     pluginConfig: {
@@ -1576,6 +1682,11 @@ function registerHarness(
       if (name === unavailableHook) throw new Error('fixture unavailable hook');
       handlers[name] = handler as Handler;
     },
+    registerGatewayMethod(name, handler, options) {
+      expect(name).toBe('semantic-layer.correlation.bind');
+      expect(options).toEqual({ scope: 'operator.admin' });
+      gatewayHandler = handler as unknown as GatewayHandler;
+    },
     logger: {
       debug() {},
       info() {},
@@ -1586,7 +1697,18 @@ function registerHarness(
     },
     runtime: { version: hostVersion },
   });
-  return { handlers, errors };
+  return {
+    handlers,
+    errors,
+    bindCorrelation(params: Record<string, unknown>): unknown {
+      let payload: unknown;
+      gatewayHandler?.({
+        params,
+        respond(_ok, value) { payload = value; },
+      });
+      return payload;
+    },
+  };
 }
 
 function captureHarness(
@@ -1594,6 +1716,7 @@ function captureHarness(
     pressure?: 'ok' | 'full';
     enqueueState?: 'pending' | 'awaiting_spool_admission';
     enqueueError?: Error;
+    rejectOpen?: boolean;
   } = {},
 ) {
   const captures: unknown[] = [];
@@ -1603,6 +1726,7 @@ function captureHarness(
   const records: Array<Record<string, unknown>> = [];
   const enqueued: string[] = [];
   const shutdowns: string[] = [];
+  const lifecycleDeactivations: string[] = [];
   const uploaderOptions: Array<Record<string, unknown>> = [];
   let captureNumber = 0;
   const dependencies: PluginDependencies = {
@@ -1616,6 +1740,13 @@ function captureHarness(
           const sink: SourceSink = {
             openTrace(input) {
               opened.push(input);
+              if (behavior.rejectOpen) {
+                return {
+                  accepted: false as const,
+                  reason: 'fixture_rejected',
+                  settled: Promise.resolve(),
+                };
+              }
               return accepted(`root-${number}`, {
                 runId: String(input.nativeIdentity),
                 traceId: `trace-${number}`,
@@ -1627,7 +1758,10 @@ function captureHarness(
             },
           };
           source.install(sink);
-          return { deactivate() {}, drain() {} };
+          return {
+            deactivate() { lifecycleDeactivations.push(artifactPath); },
+            drain() {},
+          };
         },
         status: () => status(artifactPath),
         flush: async () => status(artifactPath),
@@ -1673,6 +1807,7 @@ function captureHarness(
     records,
     enqueued,
     shutdowns,
+    lifecycleDeactivations,
     uploaderOptions,
   };
 }

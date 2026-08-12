@@ -26,7 +26,7 @@ import { checkCompatibility, type CompatibilityResult } from './preflight.js';
 
 const PLUGIN_ID = 'semantic-layer-openclaw';
 const PLUGIN_PACKAGE = 'semantic-layer-openclaw';
-const PLUGIN_VERSION = '0.1.0-pilot.4';
+const PLUGIN_VERSION = '0.1.0-pilot.5';
 const PACKAGE_SPEC = `npm:${PLUGIN_PACKAGE}@${PLUGIN_VERSION}`;
 const DEFAULT_OPENCLAW_SPOOL_BYTES = 1024 * 1024 * 1024;
 const SECRET_ENVIRONMENT_KEYS = [
@@ -50,6 +50,9 @@ export const REQUIRED_PLUGIN_HOOKS = [
   'subagent_ended',
   'gateway_start',
   'gateway_stop',
+] as const;
+export const REQUIRED_PLUGIN_GATEWAY_METHODS = [
+  'semantic-layer.correlation.bind',
 ] as const;
 
 export async function main(
@@ -467,6 +470,8 @@ async function setup(options: {
     return 0;
   }
 
+  const configuredIdentityKey = consumeSetupSecretEnvironment().identityKey;
+
   let prompt: ReturnType<typeof createInterface> | undefined;
   const ask = async (label: string): Promise<string> => {
     prompt ??= createInterface({ input: stdin, output: stdout });
@@ -576,10 +581,19 @@ async function setup(options: {
     }
     let credentials: SetupCredentials;
     try {
+      if (
+        existingCredentials
+        && configuredIdentityKey
+        && existingCredentials.identityKey !== configuredIdentityKey
+      ) {
+        throw new TypeError(
+          'Configured identity key does not match the existing setup state.',
+        );
+      }
       credentials = createManagedSetupCredentials(
         ingestKey,
         existingCredentials,
-        undefined,
+        configuredIdentityKey,
         assignedInstallationId,
       );
     } catch (error) {
@@ -1224,6 +1238,21 @@ export function pluginRuntimeFailures(value: string): string[] {
   if (missingHooks.length > 0)
     failures.push(
       `Plugin runtime inspection is missing required hooks: ${missingHooks.join(', ')}.`,
+    );
+
+  const registeredGatewayMethods = new Set(
+    Array.isArray(report.gatewayMethods)
+      ? report.gatewayMethods.filter(
+          (name): name is string => typeof name === 'string',
+        )
+      : [],
+  );
+  const missingGatewayMethods = REQUIRED_PLUGIN_GATEWAY_METHODS.filter(
+    (method) => !registeredGatewayMethods.has(method),
+  );
+  if (missingGatewayMethods.length > 0)
+    failures.push(
+      `Plugin runtime inspection is missing required Gateway methods: ${missingGatewayMethods.join(', ')}.`,
     );
 
   if (!Array.isArray(report.diagnostics)) {

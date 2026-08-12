@@ -128,12 +128,12 @@ try {
     {
       name: 'semantic-layer-openclaw',
       directory: 'packages/openclaw',
-      version: '0.1.0-pilot.4',
+      version: '0.1.0-pilot.5',
     },
     {
       name: 'semantic-layer-openclaw-setup',
       directory: 'packages/openclaw-setup',
-      version: '0.1.0-pilot.9',
+      version: '0.1.0-pilot.10',
       bin: 'semantic-layer-openclaw-setup',
     },
   ];

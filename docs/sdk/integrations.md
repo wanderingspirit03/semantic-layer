@@ -23,12 +23,6 @@ the version, the manifest records the version as unknown.
 | Mastra | `mastraAdapter` | `official:mastra` | `1.50.1`, `1.50.0` |
 | Strands | `strandsAdapter` | `official:strands-js` | `1.9.0`, `1.8.0` |
 | OpenTelemetry | `createOpenTelemetrySource` | `generic:otel` | API `1.9.1`, tracing `2.9.0`, logs `0.220.0`; API `1.9.0`, tracing `1.25.1`, OTLP HTTP exporter `0.52.1` |
-| Trigger.dev task attempts | Tavi attempt wrapper with `createOpenTelemetrySource` | manual run correlation and `generic:otel` | Trigger SDK `4.4.4` on Node `22.16.0` with OpenTelemetry API `1.9.0` and tracing `1.25.1` |
-
-The Trigger.dev fixture uses public task context fields and the task-local
-`onCancel` hook. Trigger `4.4.4` does not expose a replay relation, so a replay
-is a new run under the same protected research task. A forced worker stop
-cannot run finalization and is not claimed as captured.
 
 ## Python
 

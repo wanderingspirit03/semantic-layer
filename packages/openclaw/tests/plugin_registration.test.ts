@@ -4,6 +4,7 @@ import { createPluginDefinition, REQUIRED_HOOKS } from '../src/plugin.js';
 describe('OpenClaw plugin registration', () => {
   it('registers every supported observation hook synchronously without agent tools', () => {
     const hooks: string[] = [];
+    const methods: Array<{ name: string; scope: string | undefined }> = [];
     let registeredTools = 0;
     const plugin = createPluginDefinition({
       createRunCapture: () => {
@@ -22,11 +23,17 @@ describe('OpenClaw plugin registration', () => {
       registerTool() {
         registeredTools += 1;
       },
+      registerGatewayMethod(name, _handler, options) {
+        methods.push({ name, scope: options?.scope });
+      },
       logger: { debug() {}, info() {}, warn() {}, error() {} },
     });
 
     expect(result).toBeUndefined();
     expect(hooks).toEqual(REQUIRED_HOOKS);
+    expect(methods).toEqual([
+      { name: 'semantic-layer.correlation.bind', scope: 'operator.admin' },
+    ]);
     expect(registeredTools).toBe(0);
   });
 

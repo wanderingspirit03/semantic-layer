@@ -22,6 +22,25 @@ The runtime follows these rules:
 During an outage, pending traces stay on local disk and the agent continues
 normally. A trace can contain private or personal content.
 
+## Trusted cross-system correlation
+
+An authorized dispatcher can bind an opaque research task ID before a run:
+
+```text
+semantic-layer.correlation.bind
+{ "runId": "<chat.send idempotency key>", "taskId": "<research task ID>" }
+```
+
+The Gateway requires `operator.admin`. The dispatcher waits for
+`{ "accepted": true }` and then calls `chat.send` with the same run ID as its
+idempotency key. The plugin consumes the binding once and writes only protected
+task and run tokens. It never reads correlation from prompts, messages, tool
+inputs, or tool outputs.
+
+Use the same customer identity key in OpenClaw and any other service that must
+join this task. Keep separate ingestion keys and installation IDs for each
+installation.
+
 ## Development
 
 Run these checks from the repository root:

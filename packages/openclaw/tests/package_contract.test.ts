@@ -13,11 +13,11 @@ describe('published plugin contract', () => {
     );
 
     expect(packageJson.name).toBe('semantic-layer-openclaw');
-    expect(packageJson.version).toBe('0.1.0-pilot.4');
+    expect(packageJson.version).toBe('0.1.0-pilot.5');
     expect(packageJson.bin).toBeUndefined();
     expect(packageJson.dependencies).toEqual({
-      'semantic-layer-capture': '0.2.0-beta.1',
-      'semantic-layer-cloud': '0.1.0-pilot.3',
+      'semantic-layer-capture': '0.2.0-beta.2',
+      'semantic-layer-cloud': '0.1.0-pilot.4',
     });
     expect(packageJson.peerDependencies.openclaw).toBe(
       '>=2026.5.5 || 2026.7.1-1 || 2026.7.1-2',

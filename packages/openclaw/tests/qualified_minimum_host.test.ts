@@ -8,6 +8,7 @@ import {
 } from 'openclaw/plugin-sdk/plugin-entry';
 import { validateJsonSchemaValue as validateWithMinimumHost } from 'openclaw/plugin-sdk/config-schema';
 import { createPluginDefinition, REQUIRED_HOOKS } from '../src/plugin.js';
+import { verifyQualifiedCorrelationBundle } from './qualified_correlation_bundle.js';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 type MinimumHookName = Parameters<MinimumPluginApi['on']>[0];
@@ -15,8 +16,21 @@ const MINIMUM_REQUIRED_HOOKS =
   REQUIRED_HOOKS satisfies readonly MinimumHookName[];
 
 describe('exact OpenClaw 2026.5.5 host contract', () => {
+  it('seals protected correlation through the installed host entry', async () => {
+    await verifyQualifiedCorrelationBundle('2026.5.5', (plugin, api) => {
+      const entry = defineMinimumPluginEntry({
+        id: plugin.id,
+        name: plugin.name,
+        description: plugin.description,
+        register: plugin.register,
+      });
+      entry.register(api as MinimumPluginApi);
+    });
+  });
+
   it('loads the plugin through the installed minimum entry shape with every required typed hook', () => {
     const hooks: string[] = [];
+    const gatewayMethods: string[] = [];
     const plugin = createPluginDefinition({
       createRunCapture: () => {
         throw new Error('capture is not used during registration');
@@ -39,11 +53,15 @@ describe('exact OpenClaw 2026.5.5 host contract', () => {
       on(name: MinimumHookName) {
         hooks.push(name);
       },
+      registerGatewayMethod(name) {
+        gatewayMethods.push(name);
+      },
       logger: { debug() {}, info() {}, warn() {}, error() {} },
       runtime: { version: '2026.5.5' },
     } as MinimumPluginApi);
 
     expect(hooks).toEqual(MINIMUM_REQUIRED_HOOKS);
+    expect(gatewayMethods).toEqual(['semantic-layer.correlation.bind']);
   });
 
   it('accepts the published plugin configuration with the installed minimum schema validator', async () => {

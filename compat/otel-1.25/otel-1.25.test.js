@@ -31,19 +31,19 @@ it('keeps the application exporter and projects an exact-version rich agent trac
   const baselineExporter = new InMemorySpanExporter();
   const baselineProvider = new BasicTracerProvider();
   baselineProvider.addSpanProcessor(new SimpleSpanProcessor(baselineExporter));
-  emitRichFixture(baselineProvider.getTracer('tavi-fixture', '1', { schemaUrl }));
+  emitRichFixture(baselineProvider.getTracer('otel-1.25-fixture', '1', { schemaUrl }));
   await baselineProvider.forceFlush();
 
   const applicationExporter = new InMemorySpanExporter();
   const provider = new BasicTracerProvider();
   provider.addSpanProcessor(new SimpleSpanProcessor(applicationExporter));
   provider.addSpanProcessor(source.spanProcessor);
-  const tracer = provider.getTracer('tavi-fixture', '1', { schemaUrl });
+  const tracer = provider.getTracer('otel-1.25-fixture', '1', { schemaUrl });
 
-  const agent = tracer.startSpan('invoke_agent ralph-loop', {
+  const agent = tracer.startSpan('invoke_agent orchestrator', {
     attributes: {
       'gen_ai.operation.name': 'invoke_agent',
-      'gen_ai.agent.name': 'ralph-loop',
+      'gen_ai.agent.name': 'orchestrator',
       'gen_ai.input.messages': JSON.stringify([
         { role: 'user', parts: [{ type: 'text', content: 'research' }] },
       ]),
@@ -90,7 +90,7 @@ it('keeps the application exporter and projects an exact-version rich agent trac
   expect(applicationExporter.getFinishedSpans().map((span) => span.name)).toEqual([
     'chat fixture-model',
     'execute_tool search',
-    'invoke_agent ralph-loop',
+    'invoke_agent orchestrator',
   ]);
   expect(applicationExporter.getFinishedSpans().map(applicationSpanEvidence))
     .toEqual(baselineExporter.getFinishedSpans().map(applicationSpanEvidence));
@@ -116,19 +116,19 @@ it('keeps exact-version child agent content correlated with its parent run', asy
 
   const provider = new BasicTracerProvider();
   provider.addSpanProcessor(source.spanProcessor);
-  const tracer = provider.getTracer('tavi-fixture', '1', { schemaUrl });
-  const parent = tracer.startSpan('invoke_agent ralph-loop', {
+  const tracer = provider.getTracer('otel-1.25-fixture', '1', { schemaUrl });
+  const parent = tracer.startSpan('invoke_agent orchestrator', {
     attributes: {
       'gen_ai.operation.name': 'invoke_agent',
-      'gen_ai.agent.name': 'ralph-loop',
+      'gen_ai.agent.name': 'orchestrator',
       'gen_ai.input.messages': '[{"role":"user","parts":[]}]',
     },
   });
   const parentContext = trace.setSpan(context.active(), parent);
-  const child = tracer.startSpan('invoke_agent search-loop', {
+  const child = tracer.startSpan('invoke_agent worker', {
     attributes: {
       'gen_ai.operation.name': 'invoke_agent',
-      'gen_ai.agent.name': 'search-loop',
+      'gen_ai.agent.name': 'worker',
       'gen_ai.input.messages': '[{"role":"user","parts":[{"type":"text","content":"find candidates"}]}]',
     },
   }, parentContext);
@@ -163,7 +163,7 @@ it('preserves an exact-version status message when a run fails', async () => {
 
   const provider = new BasicTracerProvider();
   provider.addSpanProcessor(source.spanProcessor);
-  const tracer = provider.getTracer('tavi-fixture', '1', { schemaUrl });
+  const tracer = provider.getTracer('otel-1.25-fixture', '1', { schemaUrl });
   const agent = tracer.startSpan('invoke_agent timed-out', {
     attributes: {
       'gen_ai.operation.name': 'invoke_agent',
@@ -188,10 +188,10 @@ it('preserves an exact-version status message when a run fails', async () => {
 });
 
 function emitRichFixture(tracer) {
-  const agent = tracer.startSpan('invoke_agent ralph-loop', {
+  const agent = tracer.startSpan('invoke_agent orchestrator', {
     attributes: {
       'gen_ai.operation.name': 'invoke_agent',
-      'gen_ai.agent.name': 'ralph-loop',
+      'gen_ai.agent.name': 'orchestrator',
       'gen_ai.input.messages': JSON.stringify([
         { role: 'user', parts: [{ type: 'text', content: 'research' }] },
       ]),

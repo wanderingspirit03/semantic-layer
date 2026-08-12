@@ -34,8 +34,8 @@ def _protected_execution(identity_key: str, system: str, run_id: str) -> str:
 def test_run_correlation_joins_two_sealed_bundles_without_raw_ids(tmp_path: Path) -> None:
     identity_key = "fixture-run-correlation-key-32-bytes"
     task_id = "tenant-task-private"
-    root_run_id = "trigger-root-private"
-    child_run_id = "trigger-child-private"
+    root_run_id = "worker-root-private"
+    child_run_id = "worker-child-private"
 
     first = initialize(
         output=tmp_path,
@@ -43,11 +43,11 @@ def test_run_correlation_joins_two_sealed_bundles_without_raw_ids(tmp_path: Path
         identity_key=identity_key,
     )
     with first.observe(
-        "ralph-loop",
+        "orchestrator",
         correlation={
             "task_id": task_id,
             "execution": {
-                "system": "trigger.dev",
+                "system": "job-runner",
                 "run_id": root_run_id,
                 "root_run_id": root_run_id,
                 "attempt": 0,
@@ -64,11 +64,11 @@ def test_run_correlation_joins_two_sealed_bundles_without_raw_ids(tmp_path: Path
         identity_key=identity_key,
     )
     with second.observe(
-        "search-loop",
+        "worker",
         correlation={
             "task_id": task_id,
             "execution": {
-                "system": "trigger.dev",
+                "system": "job-runner",
                 "run_id": child_run_id,
                 "parent_run_id": root_run_id,
                 "root_run_id": root_run_id,
@@ -91,7 +91,7 @@ def test_run_correlation_joins_two_sealed_bundles_without_raw_ids(tmp_path: Path
     second_correlation = second_start["data"]["correlation"]
     assert first_correlation["task_id"] == second_correlation["task_id"]
     assert first_correlation["task_id"] == _protected_task(identity_key, task_id)
-    protected_root = _protected_execution(identity_key, "trigger.dev", root_run_id)
+    protected_root = _protected_execution(identity_key, "job-runner", root_run_id)
     assert first_correlation["execution"]["run_id"] == protected_root
     assert second_correlation["execution"]["parent_run_id"] == protected_root
     assert second_correlation["execution"]["root_run_id"] == protected_root
@@ -109,10 +109,10 @@ def test_missing_required_run_correlation_is_fail_open_and_explicit(tmp_path: Pa
     )
     customer_result = "customer-result"
     with capture.observe(
-        "ralph-loop",
+        "orchestrator",
         correlation={
             "task_id": "",
-            "execution": {"system": "trigger.dev", "run_id": ""},
+            "execution": {"system": "job-runner", "run_id": ""},
         },
     ):
         observed_result = customer_result
@@ -143,7 +143,7 @@ def test_missing_execution_mapping_names_current_identity_gap(
         identity_key="fixture-missing-execution-key",
     )
     with capture.observe(
-        "ralph-loop",
+        "orchestrator",
         correlation={
             "task_id": "research-task-private",
             "execution": execution,
@@ -173,14 +173,14 @@ def test_invalid_optional_run_relation_does_not_remove_valid_correlation(
     )
 
     with capture.observe(
-        "search-loop",
+        "worker",
         correlation={
             "task_id": "research-task-private",
             "execution": {
-                "system": "trigger.dev",
-                "run_id": "trigger-child-private",
+                "system": "job-runner",
+                "run_id": "worker-child-private",
                 "parent_run_id": "",
-                "root_run_id": "trigger-root-private",
+                "root_run_id": "worker-root-private",
                 "attempt": 1,
             },
         },
@@ -192,7 +192,7 @@ def test_invalid_optional_run_relation_does_not_remove_valid_correlation(
     rows = [json.loads(line) for line in (artifact / "trace.jsonl").read_text().splitlines()]
     start = next(row for row in rows if row["kind"] == "run.start")
     execution = start["data"]["correlation"]["execution"]
-    assert execution["system"] == "trigger.dev"
+    assert execution["system"] == "job-runner"
     assert execution["attempt"] == 1
     assert "parent_run_id" not in execution
     assert "root_run_id" in execution
@@ -215,12 +215,12 @@ def test_custom_source_open_trace_accepts_run_correlation(tmp_path: Path) -> Non
         def install(self, sink: Any) -> Any:
             opened = sink.open_trace(
                 {
-                    "name": "search-loop",
-                    "semantic": {"type": "workflow.run", "name": "search-loop"},
+                    "name": "worker",
+                    "semantic": {"type": "workflow.run", "name": "worker"},
                     "correlation": {
                         "task_id": "source-task-private",
                         "execution": {
-                            "system": "trigger.dev",
+                            "system": "job-runner",
                             "run_id": "source-run-private",
                             "attempt": 0,
                         },
@@ -232,7 +232,7 @@ def test_custom_source_open_trace_accepts_run_correlation(tmp_path: Path) -> Non
                 {
                     "kind": "lifecycle",
                     "phase": "end",
-                    "name": "search-loop",
+                    "name": "worker",
                     "trace": opened.identity,
                     "parent_record_id": opened.record_id,
                     "native": None,
@@ -264,9 +264,9 @@ def test_custom_source_open_trace_accepts_run_correlation(tmp_path: Path) -> Non
     assert start["data"]["correlation"] == {
         "task_id": _protected_task(identity_key, "source-task-private"),
         "execution": {
-            "system": "trigger.dev",
+            "system": "job-runner",
             "run_id": _protected_execution(
-                identity_key, "trigger.dev", "source-run-private"
+                identity_key, "job-runner", "source-run-private"
             ),
             "attempt": 0,
         },

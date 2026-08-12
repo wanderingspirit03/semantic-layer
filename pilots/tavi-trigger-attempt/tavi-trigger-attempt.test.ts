@@ -26,7 +26,12 @@ const roots: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(roots.splice(0).map((root) => rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 50,
+  })));
 });
 
 describe('runTaviTriggerAttempt', () => {
@@ -69,6 +74,78 @@ describe('runTaviTriggerAttempt', () => {
     const attempt = await onlyAttempt(root);
     expect((await stat(attempt)).mode & 0o777).toBe(0o700);
     await expect(validateArtifact(await onlyBundle(attempt))).resolves.toMatchObject({ valid: true });
+  });
+
+  it('acknowledges a successful orchestrator with only an attempt-local agent root', async () => {
+    const root = await privateRoot();
+    const deliveries: TaviTriggerDelivery[] = [];
+    const config = tenant();
+    const source = createOpenTelemetrySource({ version: '1.25.1' });
+    const latitude = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider();
+    provider.addSpanProcessor(new SimpleSpanProcessor(latitude));
+    provider.addSpanProcessor(source.spanProcessor);
+    const tracer = provider.getTracer('tavi-attempt-local', '1.0.0', {
+      schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+    });
+
+    await expect(runTaviTriggerAttempt({
+      tenant: config,
+      trigger: triggerIdentity({ attemptNumber: 4 }),
+      successfulAttemptProfile: 'orchestrator',
+      temporaryRoot: root,
+      openTelemetry: { source },
+      reportDelivery: (delivery) => { deliveries.push(delivery); },
+      task: async () => {
+        emitOrchestratorThroughTracer(tracer, 'ralph-loop');
+        return 'complete';
+      },
+    })).resolves.toBe('complete');
+
+    expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
+    const bundle = await onlyBundle(await onlyAttempt(root));
+    await expect(validateArtifact(bundle, {
+      profile: 'structural',
+      requiredEvidence: ['root', 'delivery'],
+      requiredSourceActivity: ['generic:otel'],
+      secretValues: [config.ingestKey, config.identityKey],
+    })).resolves.toMatchObject({ valid: true, issues: [] });
+    await expect(validateArtifact(bundle, { profile: 'rich-agent' }))
+      .resolves.toMatchObject({ valid: false });
+    const start = (await traceRows(bundle)).find((row) => row.kind === 'run.start')!;
+    expect(start.data.correlation).toMatchObject({
+      task_id: expect.stringMatching(/^task_/u),
+      execution: {
+        system: 'trigger.dev',
+        run_id: expect.stringMatching(/^exec_/u),
+        attempt: 4,
+      },
+    });
+    expect(latitude.getFinishedSpans().map((span) => span.name))
+      .toEqual(['ralph-loop-agent']);
+    await provider.shutdown();
+  });
+
+  it('rejects an orchestrator without exact GenAI invoke-agent evidence', async () => {
+    const root = await privateRoot();
+    const deliveries: TaviTriggerDelivery[] = [];
+    const source = createOpenTelemetrySource({ version: '1.25.1' });
+
+    await runTaviTriggerAttempt({
+      tenant: tenant(),
+      trigger: triggerIdentity(),
+      successfulAttemptProfile: 'orchestrator',
+      temporaryRoot: root,
+      openTelemetry: { source },
+      reportDelivery: (delivery) => { deliveries.push(delivery); },
+      task: async () => {
+        emitOrchestratorOpenTelemetry(source, '9', 'ralph-loop', '1.41.0');
+        return 'complete';
+      },
+    });
+
+    expect(deliveries).toEqual([{ status: 'capture_failed' }]);
+    expect(await readdir(await onlyAttempt(root))).not.toContain('spool');
   });
 
   it('reports a successful but empty research capture as unhealthy', async () => {
@@ -216,6 +293,11 @@ describe('runTaviTriggerAttempt', () => {
 
   it('routes concurrent enrolled attempts on one OTel 1.25 provider without mixing spans', async () => {
     const root = await privateRoot();
+    const latitudeBaseline = await latitudeEvidenceWithoutArcus([
+      'tenant-a',
+      'tenant-b',
+      'not-enrolled',
+    ]);
     const latitude = new InMemorySpanExporter();
     const provider = new BasicTracerProvider();
     const router = createTaviOpenTelemetryAttemptRouter();
@@ -281,6 +363,7 @@ describe('runTaviTriggerAttempt', () => {
       'tenant-b-model',
       'tenant-b-tool',
     ]);
+    expect(latitudeEvidence(latitude)).toEqual(latitudeBaseline);
     await provider.shutdown();
   });
 
@@ -484,6 +567,34 @@ describe('runTaviTriggerAttempt', () => {
     expect(deliveries).toEqual([{ status: 'timed_out' }]);
   });
 
+  it('caps all finalization work and reports delivery exactly once', async () => {
+    const root = await privateRoot();
+    const deliveries: TaviTriggerDelivery[] = [];
+    const source = createOpenTelemetrySource({ version: '1.25.1' });
+    const startedAt = Date.now();
+
+    await expect(runTaviTriggerAttempt({
+      tenant: {
+        ...tenant(async () => await new Promise<Response>(() => {})),
+        uploadDeadlineMs: 10_000,
+        finalizationDeadlineMs: 40,
+      },
+      trigger: triggerIdentity(),
+      temporaryRoot: root,
+      openTelemetry: { source },
+      reportDelivery: (delivery) => { deliveries.push(delivery); },
+      task: async () => {
+        emitRichOpenTelemetry(source, 'a', 'bounded-finalization');
+        return 'customer-result';
+      },
+    })).resolves.toBe('customer-result');
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(deliveries).toEqual([{ status: 'timed_out' }]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(deliveries).toHaveLength(1);
+  });
+
   it('reports capture setup failure without breaking customer work', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
@@ -622,7 +733,7 @@ describe('runTaviTriggerAttempt', () => {
     });
   });
 
-  it('captures and acknowledges correlated ralph and search rich-agent bundles', async () => {
+  it('captures a structural ralph orchestrator and a correlated rich search child', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
     const config = tenant();
@@ -640,11 +751,12 @@ describe('runTaviTriggerAttempt', () => {
         rootRunId: parentRunId,
         researchId,
       }),
+      successfulAttemptProfile: 'orchestrator',
       temporaryRoot: root,
       openTelemetry: { source: parentSource, router },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
-        emitRichOpenTelemetry(parentSource, '1', 'ralph-loop');
+        emitOrchestratorOpenTelemetry(parentSource, '1', 'ralph-loop');
         return 'complete';
       },
     });
@@ -671,20 +783,22 @@ describe('runTaviTriggerAttempt', () => {
     ]);
     const bundles = await Promise.all((await attemptDirectories(root)).map(onlyBundle));
     expect(bundles).toHaveLength(2);
-    for (const bundle of bundles) {
-      await expect(validateArtifact(bundle, {
-        profile: 'rich-agent',
-        secretValues: [config.ingestKey, config.identityKey],
-      })).resolves.toMatchObject({ valid: true, issues: [] });
-      const kinds = (await traceRows(bundle)).map((row) => row.kind);
-      expect(kinds).toEqual(expect.arrayContaining([
-        'model.request',
-        'model.response',
-        'tool.call',
-        'tool.result',
-      ]));
-    }
-    const starts = (await Promise.all(bundles.map(traceRows)))
+    const bundleRows = await Promise.all(bundles.map(traceRows));
+    const parentRows = bundleRows.find((rows) => !rows.some((row) => row.kind === 'tool.call'))!;
+    const childRows = bundleRows.find((rows) => rows.some((row) => row.kind === 'tool.call'))!;
+    expect(parentRows).toBeDefined();
+    expect(childRows.map((row) => row.kind)).toEqual(expect.arrayContaining([
+      'model.request',
+      'model.response',
+      'tool.call',
+      'tool.result',
+    ]));
+    const childBundle = bundles[bundleRows.indexOf(childRows)]!;
+    await expect(validateArtifact(childBundle, {
+      profile: 'rich-agent',
+      secretValues: [config.ingestKey, config.identityKey],
+    })).resolves.toMatchObject({ valid: true, issues: [] });
+    const starts = bundleRows
       .flatMap((rows) => rows.filter((row) => row.kind === 'run.start'))
       .filter((row) => row.data.correlation?.execution.system === 'trigger.dev');
     expect(starts).toHaveLength(2);
@@ -857,6 +971,21 @@ async function traceRows(bundle: string): Promise<Array<Record<string, any>>> {
 
 type OTelSpan = Parameters<OpenTelemetrySource['spanProcessor']['onStart']>[0];
 
+function emitOrchestratorOpenTelemetry(
+  source: OpenTelemetrySource,
+  seed: string,
+  agentName: string,
+  schemaVersion = '1.42.0',
+): void {
+  const traceId = seed.padStart(32, '0');
+  const agent = otelSpan(traceId, `${seed}1`.padStart(16, '0'), undefined, {
+    'gen_ai.operation.name': 'invoke_agent',
+    'gen_ai.agent.name': agentName,
+  }, schemaVersion);
+  source.spanProcessor.onStart(agent, {});
+  source.spanProcessor.onEnd(agent);
+}
+
 function emitRichOpenTelemetry(
   source: OpenTelemetrySource,
   seed: string,
@@ -940,11 +1069,54 @@ function emitRichThroughTracer(tracer: Tracer, marker: string): void {
   agent.end();
 }
 
+function emitOrchestratorThroughTracer(tracer: Tracer, marker: string): void {
+  tracer.startSpan(`${marker}-agent`, {
+    attributes: {
+      'gen_ai.operation.name': 'invoke_agent',
+      'gen_ai.agent.name': marker,
+    },
+  }).end();
+}
+
+async function latitudeEvidenceWithoutArcus(
+  markers: readonly string[],
+): Promise<ReturnType<typeof latitudeEvidence>> {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider();
+  provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+  const tracer = provider.getTracer('tavi-test', '1.0.0', {
+    schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+  });
+  for (const marker of markers) emitRichThroughTracer(tracer, marker);
+  const evidence = latitudeEvidence(exporter);
+  await provider.shutdown();
+  return evidence;
+}
+
+function latitudeEvidence(exporter: InMemorySpanExporter): Array<{
+  name: string;
+  parent: string | null;
+  operation: unknown;
+  toolName: unknown;
+  schemaUrl: string | undefined;
+}> {
+  const spans = exporter.getFinishedSpans();
+  const namesById = new Map(spans.map((span) => [span.spanContext().spanId, span.name]));
+  return spans.map((span) => ({
+    name: span.name,
+    parent: span.parentSpanId ? namesById.get(span.parentSpanId) ?? null : null,
+    operation: span.attributes['gen_ai.operation.name'],
+    toolName: span.attributes['gen_ai.tool.name'],
+    schemaUrl: span.instrumentationLibrary.schemaUrl,
+  })).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function otelSpan(
   traceId: string,
   spanId: string,
   parentSpanContext: ReturnType<OTelSpan['spanContext']> | undefined,
   attributes: Record<string, unknown>,
+  schemaVersion = '1.42.0',
 ): OTelSpan {
   return {
     spanContext: () => ({ traceId, spanId, traceFlags: 1 }),
@@ -958,7 +1130,7 @@ function otelSpan(
     instrumentationScope: {
       name: 'tavi-trigger-test',
       version: '1',
-      schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+      schemaUrl: `https://opentelemetry.io/schemas/gen-ai/${schemaVersion}`,
     },
     droppedAttributesCount: 0,
     droppedEventsCount: 0,
