@@ -32,14 +32,14 @@ containers, run setup once on each one with its own installation ID and key.
 
 ## Container installation
 
-The pinned container pilot uses setup package `0.1.0-pilot.10` and runtime
-plugin `0.1.0-pilot.5`.
+The pinned container pilot uses setup package `0.1.0-pilot.11` and runtime
+plugin `0.1.0-pilot.6`.
 
 Run this command inside the OpenClaw container as the same user that runs
 OpenClaw:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.11 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
@@ -102,7 +102,7 @@ without asking for another key or installing the plugin again.
 After Gateway is healthy, run:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 doctor \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.11 doctor \
   --container \
   --gateway-url "ws://127.0.0.1:3001"
 ```
@@ -198,7 +198,7 @@ acknowledgement.
 Run this command inside the container:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 uninstall --container --acknowledge-external-restart
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.11 uninstall --container --acknowledge-external-restart
 ```
 
 The command removes the Semantic Layer plugin, its config entry, its secret

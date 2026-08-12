@@ -51,6 +51,14 @@ The separate `semantic-layer-openclaw` plugin exactly qualifies OpenClaw
 Doctor checks the live hooks and configuration before an unqualified host is
 described as capability checked.
 
+The plugin receives OpenClaw's trusted native run ID before it starts capture.
+It uses that ID as the protected cross-service task identity unless an
+authorized Gateway caller has bound another opaque task ID to the same run.
+The native run ID remains normal structural OpenClaw evidence in the bundle.
+The protected task token is the cross-service join. The plugin never derives
+correlation from prompts, messages, tool parameters, or tool results. See the
+[plugin correlation contract](../../packages/openclaw/README.md#trusted-cross-system-correlation).
+
 OpenClaw `2026.5.5` does not expose resolved tool definitions, model finish
 reason, or model call identity through every rich hook. The plugin records a
 named loss when a missing identity prevents exact correlation. See the

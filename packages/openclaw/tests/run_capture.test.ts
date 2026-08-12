@@ -220,6 +220,31 @@ describe('OpenClaw run capture', () => {
       .toEqual({ accepted: false, reason: 'capacity_reached' });
   });
 
+  it('uses the trusted native run ID as correlation when no task was pre-bound', async () => {
+    const harness = captureHarness();
+    const { handlers } = registerHarness(harness.dependencies);
+    const context = {
+      runId: 'native-inbound-run',
+      sessionId: 'native-inbound-session',
+    };
+
+    handlers.before_model_resolve!(
+      { prompt: 'start' },
+      context,
+    );
+
+    expect(harness.opened).toContainEqual(expect.objectContaining({
+      correlation: {
+        taskId: context.runId,
+        execution: {
+          system: 'openclaw',
+          runId: context.runId,
+          rootRunId: context.runId,
+        },
+      },
+    }));
+  });
+
   it('does not attach an expired in-memory correlation binding', () => {
     vi.useFakeTimers();
     try {
@@ -235,7 +260,16 @@ describe('OpenClaw run capture', () => {
         { runId: 'run-expired', sessionId: 'session-expired' },
       );
 
-      expect(harness.opened[0]).not.toHaveProperty('correlation');
+      expect(harness.opened[0]).toMatchObject({
+        correlation: {
+          taskId: 'run-expired',
+          execution: {
+            system: 'openclaw',
+            runId: 'run-expired',
+            rootRunId: 'run-expired',
+          },
+        },
+      });
     } finally {
       vi.useRealTimers();
     }

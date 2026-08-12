@@ -60,10 +60,17 @@ Separate processes produce separate bundles. A caller can give `observe()` or
 option. The execution identity includes a system name, the current run ID, and
 optional parent run ID, root run ID, and attempt number.
 
-The SDK protects every task and run ID with HMAC before it writes the bundle.
-The raw values do not appear in `trace.jsonl`. Current, parent, and root run IDs
-use the same protection domain for one execution system. This lets a reader
-match a child parent ID to the exact current ID in its parent bundle.
+The SDK protects every task and run ID in the correlation object with HMAC
+before it writes the bundle. The correlation option never writes those raw
+values. Current, parent, and root run IDs use the same protection domain for
+one execution system. This lets a reader match a child parent ID to the exact
+current ID in its parent bundle.
+
+An adapter can separately retain a framework run ID as native structural
+evidence. If a caller reuses that framework ID as a correlation ID, the
+protected correlation object and the native structural field can refer to the
+same value, while only the structural field keeps the raw value. Use a separate
+trusted task ID when the task ID must never appear anywhere in the bundle.
 
 Related bundles must use the same explicit `identityKey`. The default identity
 key is private to one capture session, so it cannot join separate bundles. Use

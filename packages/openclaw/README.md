@@ -24,7 +24,14 @@ normally. A trace can contain private or personal content.
 
 ## Trusted cross-system correlation
 
-An authorized dispatcher can bind an opaque research task ID before a run:
+OpenClaw creates a cryptographic native run ID before the plugin starts a trace.
+When no external task ID was bound, the plugin uses that trusted run ID as the
+task ID. Another trusted service can use the same raw run ID with the same
+identity key to produce the same protected task token. The raw run ID remains
+normal structural OpenClaw evidence in the trace. See the canonical
+[integration contract](../../docs/sdk/integrations.md#openclaw).
+
+An authorized dispatcher can override the task ID before a direct Gateway run:
 
 ```text
 semantic-layer.correlation.bind
@@ -33,9 +40,12 @@ semantic-layer.correlation.bind
 
 The Gateway requires `operator.admin`. The dispatcher waits for
 `{ "accepted": true }` and then calls `chat.send` with the same run ID as its
-idempotency key. The plugin consumes the binding once and writes only protected
-task and run tokens. It never reads correlation from prompts, messages, tool
-inputs, or tool outputs.
+idempotency key. The plugin consumes the binding once. Native inbound runs do
+not need this Gateway call.
+
+Correlation comes only from the trusted native run context or from the
+authorized Gateway binding. The plugin never reads correlation from prompts,
+messages, tool inputs, or tool outputs.
 
 Use the same customer identity key in OpenClaw and any other service that must
 join this task. Keep separate ingestion keys and installation IDs for each

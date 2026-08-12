@@ -9,6 +9,15 @@ The example wraps one Trigger task attempt. It uses
 `semantic-layer-cloud@0.1.0-pilot.4` without adding another published package.
 Its context mapping is checked against `@trigger.dev/sdk@4.4.4`.
 
+The OpenClaw side uses these exact packages:
+
+* `semantic-layer-openclaw@0.1.0-pilot.6`
+* `semantic-layer-openclaw-setup@0.1.0-pilot.11`
+
+Plugin `0.1.0-pilot.5` and setup `0.1.0-pilot.10` support only an explicit
+binding before a direct Gateway request. They do not add native inbound Slack
+correlation.
+
 Use Node 22 for the Trigger task. Trigger uses Node 21 by default, while both
 Semantic Layer packages require Node 22 or newer. Set `runtime: "node-22"` in
 the Trigger configuration.
@@ -71,9 +80,10 @@ join these bundles. Keep different customers on different identity keys.
 
 ## Task integration
 
-Choose the provider attachment based on how long the provider lives. When one
-provider belongs to one attempt, add a fresh Arcus processor directly and shut
-the provider down with the attempt. The following form uses that pattern:
+Tavi creates one `BasicTracerProvider` for each task attempt and shuts it down
+when the attempt ends. Resolve the trusted tenant before creating the Arcus
+source. For an enrolled attempt, add a fresh Arcus processor beside the
+existing Latitude processor before Tavi creates the tracer or any span.
 
 ```ts
 const source = createOpenTelemetrySource({ version: '1.25.1' });
@@ -86,22 +96,15 @@ await runTaviTriggerAttempt({
 });
 ```
 
-When attempts share one provider, add one permanent attempt router so
-concurrent tenants cannot mix spans. Use Tavi's direct OpenTelemetry `1.25.1`
-types, and do not use processor classes from Trigger's nested OpenTelemetry
-`2.x` packages. The following form creates one router when the worker starts
-and adds it beside Latitude exactly once:
+Use Tavi's direct OpenTelemetry `1.25.1` types. Do not import processor classes
+from Trigger's nested OpenTelemetry `2.x` packages. Pass `null` to the wrapper
+before creating a source or provider processor for an unenrolled tenant. An
+unenrolled attempt must create no Arcus source, processor, file, spool, or
+upload.
 
-```ts
-import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
-
-const semanticLayerAttemptRouter = createTaviOpenTelemetryAttemptRouter();
-existingTracerProvider.addSpanProcessor(semanticLayerAttemptRouter.spanProcessor);
-```
-
-Create one cancellation registry beside the provider attachment. Trigger's task-local
-`onCancel` hook aborts the matching attempt and waits for its bounded telemetry
-finalization. Create a new OpenTelemetry source inside every enrolled attempt.
+Create one cancellation registry beside the task integration. Trigger's
+task-local `onCancel` hook aborts the matching attempt and waits for bounded
+telemetry finalization.
 
 ```ts
 import { task } from '@trigger.dev/sdk/v3';
@@ -117,9 +120,12 @@ export const researchTask = task({
   },
   run: async (payload, { ctx }) => {
     const cancellation = cancellations.register(ctx.run.id);
-    const source = createOpenTelemetrySource({ version: '1.25.1' });
+    const tenant = resolveTrustedTenant(payload.tenantId);
+    const source = tenant === null
+      ? undefined
+      : createOpenTelemetrySource({ version: '1.25.1' });
     return await runTaviTriggerAttempt({
-      tenant: trustedTenantOrNull,
+      tenant,
       successfulAttemptProfile: 'orchestrator',
       trigger: triggerIdentityFromContext(
         ctx,
@@ -127,14 +133,23 @@ export const researchTask = task({
         incomingTraceparent,
       ),
       cancellation,
-      openTelemetry: {
-        source,
-        router: semanticLayerAttemptRouter,
-      },
+      ...(source ? { openTelemetry: { source } } : {}),
       reportDelivery(delivery) {
         existingSafeDiagnosticSink.recordSynchronously(delivery);
       },
-      task: async ({ signal }) => await runResearch(payload, { signal }),
+      task: async ({ signal }) => await withTenantRunTelemetry({
+        payload,
+        signal,
+        // The existing helper creates the attempt provider and shuts it down
+        // in its existing finally block after run() settles.
+        beforeTracerCreated(provider) {
+          // Tavi already adds and owns the Latitude processor here.
+          if (source) provider.addSpanProcessor(source.spanProcessor);
+        },
+        async run({ tracer }) {
+          return await runResearch(payload, { signal, tracer });
+        },
+      }),
     });
   },
 });
@@ -145,9 +160,12 @@ The wrapper maps only public fields from Trigger 4.4.4. It uses `ctx.run.id`,
 `ctx.attempt.number`. Trigger 4.4.4 does not expose a replay relation. A replay
 therefore appears as a new run under the same research task.
 
-For an attempt-local provider, omit `router` from `openTelemetry`. For a shared
-provider, keep the router shown above. Spans outside an enrolled attempt remain
-available to Latitude.
+`withTenantRunTelemetry()` runs for every tenant, so the existing Latitude
+provider lifecycle does not change. Its existing `finally` block shuts down
+the provider after `run()` settles. The Arcus processor is added only when the
+trusted resolver enrolls the tenant, and it is added before the helper creates
+`tracer`. Do not create a second provider, and do not add a process-wide Arcus
+router to the current Tavi runtime.
 
 Tavi's tool spans need these attributes:
 
@@ -208,12 +226,15 @@ does not expose a root ID, the mapper leaves the root relation absent. It does
 not claim that the child is its own root.
 
 The task-local Trigger cancellation hook starts the same bounded finalization
-used by normal completion and waits for it. A cooperative task that settles
-within the deadline records a cancelled outcome and can upload. If task cleanup
-does not settle before the deadline, the bundle reports `capture_failed` and is
-not uploaded. The wrapper still preserves the exact value later thrown by the
-task. A forced worker stop cannot run cleanup. The example does not claim
-evidence delivery after a forced stop.
+used by normal completion and waits for it. It first gives the cooperative task
+up to the smaller of five seconds or the capture shutdown budget to settle, so
+Tavi's attempt provider can flush and shut down before Arcus seals the bundle.
+The settlement wait and all later finalization work share one 25 second clock.
+A cooperative task that settles within the deadline records a cancelled
+outcome and can upload. If task cleanup does not settle before the deadline,
+the bundle reports `capture_failed` and is not uploaded. The wrapper still
+preserves the exact value later thrown by the task. A forced worker stop cannot
+run cleanup. The example does not claim evidence delivery after a forced stop.
 Use these exact deadlines:
 
 ```ts
@@ -236,19 +257,51 @@ through protected task and execution IDs.
 
 ## OpenClaw relation
 
-Use the plugin's
-[trusted cross-system correlation contract](../../packages/openclaw/README.md#trusted-cross-system-correlation).
-Tavi creates the task and run IDs, completes that bind before `chat.send`, and
-uses the run ID as the `chat.send` idempotency key.
+Normal Slack requests use OpenClaw's trusted native run ID as the research ID.
+OpenClaw creates the ID before `before_model_resolve`. Arcus receives the exact
+ID in the trusted hook context and uses it as the protected task ID. A direct
+`chat.send` caller can still use the optional Gateway binding described in the
+[cross-service correlation contract](../../packages/openclaw/README.md#trusted-cross-system-correlation).
 
-Deep People forwards the same task ID unchanged to Trigger as `researchId`.
+Tavi must move the native run ID into `dispatch_search` through trusted runtime
+state. Do not read or accept the research ID from the prompt, model output, or
+tool parameters. The smallest Tavi change uses `before_tool_call`, which has
+the exact native run ID and tool call ID. The tool execution receives the same
+tool call ID.
+
+```ts
+const researchIds = createOpenClawToolCorrelationBridge();
+registerOpenClawToolCorrelation(api, researchIds);
+
+const dispatchSearch = {
+  name: 'dispatch_search',
+  async execute(toolCallId, modelParams, signal) {
+    return await dispatchSearchWithTrustedCorrelation({
+      bridge: researchIds,
+      toolCallId,
+      modelParams,
+      signal,
+      dispatch: deepPeople.dispatchSearch,
+    });
+  },
+};
+```
+
+The helper removes model supplied correlation fields before dispatch. When no
+trusted binding is available, it omits `client_request_id` and keeps the
+customer research fail-open. The bridge in `openclaw-tool-correlation.ts` is
+bounded, expires stale entries, rejects conflicting bindings, and removes an
+entry after use. If Tavi already exposes the trusted run ID directly in its
+tool execution context, pass that value as `client_request_id` and omit the
+bridge.
+
+Deep People forwards `client_request_id` unchanged to Trigger as `researchId`.
 The OpenClaw VM and Trigger installation use separate ingestion keys and
-installation IDs, but they use the same customer identity key. Semantic Layer
-then writes the same protected task token in both bundles. Cloud ingest and the
-setup command need no new field.
-
-Deep People must forward the same task ID without reading it from customer
-content. If binding fails, Tavi must not claim the OpenClaw to Trigger link.
+installation IDs. They use the same customer identity key, so Arcus writes the
+same protected task token in the OpenClaw, orchestrator, and worker bundles.
+OpenClaw also keeps its native run ID as normal structural run evidence. The
+protected task token is the value used to join bundles across the three
+systems.
 
 ## Latitude compatibility
 
@@ -283,9 +336,10 @@ Run these checks before production:
 5. Run a different tenant. It must create no Arcus files, spool, spans, or
    upload.
 
-6. Run two enrolled attempts and one unenrolled attempt at the same time on
-   one OpenTelemetry 1.25 provider. Latitude must receive every expected span.
-   Each Arcus bundle must contain only its own attempt.
+6. Run two enrolled attempts and one unenrolled attempt at the same time with
+   one OpenTelemetry 1.25 provider per attempt. Latitude must receive every
+   expected span. Each Arcus bundle must contain only its own attempt, and the
+   unenrolled attempt must create no Arcus state.
 
 7. Run normal failure, application timeout, cooperative cancellation, retry,
    replay, parallel attempts, and forced upload failure. Telemetry must not
@@ -294,8 +348,16 @@ Run these checks before production:
 8. Search logs for the ingest key, identity key, customer content, local paths,
    bundle digests, and upload response bodies. None may be present.
 
+9. Send one synthetic Slack message through the noncustomer staging Slack
+   installation. It must start one OpenClaw run, one orchestrator attempt, and
+   at least one worker attempt. All three bundles must contain the same
+   protected task ID. Latitude must receive the same OpenClaw and Trigger spans
+   as its baseline run. A direct `chat.send` request does not satisfy this
+   check.
+
 Return only safe run IDs, attempt numbers, completion state, time, Latitude
 received status, Arcus received status, and the safe Arcus delivery status.
+Do not send customer content, trace contents, tool data, or credentials.
 
 ## Production and rollback
 

@@ -7,8 +7,9 @@ import {
   type OpenTelemetrySource,
 } from 'semantic-layer-capture';
 import { createCloudUploader, type CloudUploader } from 'semantic-layer-cloud';
-import type { TaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
 import type { TaviTriggerCancellation } from './trigger-cancellation.js';
+
+const COOPERATIVE_CANCELLATION_SETTLE_MS = 5_000;
 
 export type TrustedTaviTenantConfig = Readonly<{
   serviceName: string;
@@ -46,8 +47,6 @@ export type TaviTriggerDelivery = Readonly<{
 export type TaviOpenTelemetryAttachment = Readonly<{
   /** Create a fresh source for each Trigger attempt. */
   source: OpenTelemetrySource;
-  /** Required only when attempts share one process-wide provider. */
-  router?: TaviOpenTelemetryAttemptRouter;
 }>;
 
 export type TaviSuccessfulAttemptProfile = 'orchestrator' | 'rich-agent';
@@ -92,7 +91,6 @@ export async function runTaviTriggerAttempt<T>(
 
   const tenant = options.tenant;
   let capture: ReturnType<typeof createCapture> | undefined;
-  let unregisterOpenTelemetry: (() => void) | undefined;
   let attemptDirectory: string;
   try {
     const temporaryRoot = options.temporaryRoot ?? tmpdir();
@@ -109,14 +107,8 @@ export async function runTaviTriggerAttempt<T>(
     });
     if (options.openTelemetry) {
       capture.installSource(options.openTelemetry.source);
-      if (options.openTelemetry.router) {
-        unregisterOpenTelemetry = options.openTelemetry.router.registerSource(
-          options.openTelemetry.source,
-        );
-      }
     }
   } catch {
-    settle(unregisterOpenTelemetry);
     await settleCapture(capture);
     options.cancellation?.completeTelemetry();
     await reportSafely(options.reportDelivery, { status: 'capture_failed' });
@@ -129,15 +121,21 @@ export async function runTaviTriggerAttempt<T>(
 
   let taskOutcome: 'pending' | 'succeeded' | 'failed' = 'pending';
   let finalization: Promise<void> | undefined;
-  const finalize = (): Promise<void> => {
+  let cancellationExpiresAt: number | undefined;
+  const finalizationDeadlineMs = positiveDeadline(
+    tenant.finalizationDeadlineMs,
+    25_000,
+  );
+  const finalize = (expiresAt = cancellationExpiresAt
+    ?? Date.now() + finalizationDeadlineMs): Promise<void> => {
     finalization ??= finalizeWithinDeadline({
       capture: capture!,
-      unregisterOpenTelemetry,
       attemptDirectory,
       tenant,
       trigger: options.trigger,
       successfulAttemptProfile: options.successfulAttemptProfile ?? 'rich-agent',
       successful: () => taskOutcome === 'succeeded',
+      expiresAt,
     }).then(async (delivery) => {
       await reportSafely(options.reportDelivery, delivery);
     }).finally(() => { options.cancellation?.completeTelemetry(); });
@@ -169,12 +167,7 @@ export async function runTaviTriggerAttempt<T>(
       },
       ...(signal ? { cancellationSignal: signal } : {}),
     },
-    async () => options.openTelemetry?.router
-      ? await options.openTelemetry.router.runWithSource(
-        options.openTelemetry.source,
-        async () => await options.task({ signal }),
-      )
-      : await options.task({ signal }),
+    async () => await options.task({ signal }),
   );
   void observed.then(
     () => { taskOutcome = 'succeeded'; },
@@ -182,7 +175,14 @@ export async function runTaviTriggerAttempt<T>(
   );
 
   const onAbort = () => {
-    void finalize();
+    cancellationExpiresAt ??= Date.now() + finalizationDeadlineMs;
+    const settleBudgetMs = Math.min(
+      COOPERATIVE_CANCELLATION_SETTLE_MS,
+      positiveDeadline(options.tenant?.shutdownDeadlineMs, 10_000),
+      Math.max(0, cancellationExpiresAt - Date.now()),
+    );
+    void waitForSettlement(observed, settleBudgetMs)
+      .then(async () => await finalize(cancellationExpiresAt));
   };
   signal?.addEventListener('abort', onAbort, { once: true });
   if (signal?.aborted) onAbort();
@@ -195,6 +195,23 @@ export async function runTaviTriggerAttempt<T>(
   }
 }
 
+async function waitForSettlement(
+  promise: Promise<unknown>,
+  deadlineMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.then(() => undefined, () => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, deadlineMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 type FinalizationControl = {
   expired: boolean;
   expiresAt: number;
@@ -203,17 +220,17 @@ type FinalizationControl = {
 
 async function finalizeWithinDeadline(input: {
   capture: ReturnType<typeof createCapture>;
-  unregisterOpenTelemetry?: () => void;
   attemptDirectory: string;
   tenant: TrustedTaviTenantConfig;
   trigger: TaviTriggerIdentity;
   successfulAttemptProfile: TaviSuccessfulAttemptProfile;
   successful: () => boolean;
+  expiresAt: number;
 }): Promise<TaviTriggerDelivery> {
-  const deadlineMs = positiveDeadline(input.tenant.finalizationDeadlineMs, 25_000);
+  const deadlineMs = Math.max(0, input.expiresAt - Date.now());
   const control: FinalizationControl = {
     expired: false,
-    expiresAt: Date.now() + deadlineMs,
+    expiresAt: input.expiresAt,
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const work = finalizeAttempt({ ...input, control }).catch(() => (
@@ -222,7 +239,6 @@ async function finalizeWithinDeadline(input: {
   const timeout = new Promise<TaviTriggerDelivery>((resolve) => {
     timer = setTimeout(() => {
       control.expired = true;
-      settle(input.unregisterOpenTelemetry);
       if (control.uploader) {
         void control.uploader.shutdown().catch(() => {});
       }
@@ -238,7 +254,6 @@ async function finalizeWithinDeadline(input: {
 
 async function finalizeAttempt(input: {
   capture: ReturnType<typeof createCapture>;
-  unregisterOpenTelemetry?: () => void;
   attemptDirectory: string;
   tenant: TrustedTaviTenantConfig;
   trigger: TaviTriggerIdentity;
@@ -285,8 +300,6 @@ async function finalizeAttempt(input: {
     }
   } catch {
     captureHealthy = false;
-  } finally {
-    settle(input.unregisterOpenTelemetry);
   }
 
   if (!captureHealthy || !artifactPath) {

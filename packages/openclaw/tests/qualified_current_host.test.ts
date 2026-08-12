@@ -28,6 +28,18 @@ describe('exact OpenClaw 2026.7.1-2 host contract', () => {
     });
   });
 
+  it('seals native inbound correlation through the installed host entry', async () => {
+    await verifyQualifiedCorrelationBundle('2026.7.1-2', (plugin, api) => {
+      const entry = defineCurrentPluginEntry({
+        id: plugin.id,
+        name: plugin.name,
+        description: plugin.description,
+        register: plugin.register,
+      });
+      entry.register(api as CurrentPluginApi);
+    }, 'native');
+  });
+
   it('loads the plugin through the installed current entry shape with every required typed hook', () => {
     const hooks: string[] = [];
     const gatewayMethods: string[] = [];
