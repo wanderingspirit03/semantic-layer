@@ -48,6 +48,13 @@ npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 setup \
 
 Paste the matching ingestion key when the hidden prompt appears.
 
+For a customer workflow that must join OpenClaw and Trigger bundles, inject the
+customer's shared identity key as `SEMANTIC_LAYER_IDENTITY_KEY` for the first
+setup process. Use a secret manager. Do not put the value in a command, config
+file, or log. Setup removes the variable before it starts OpenClaw child
+processes and stores the value in the owner only credential file. A rerun
+rejects a different identity key.
+
 Setup first checks the key and installation ID with the ingest service. It does
 not change the host if this check fails. After the check succeeds, setup does
 the following work:

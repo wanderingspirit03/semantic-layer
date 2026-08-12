@@ -42,6 +42,12 @@ Setup and key rotation ask for the ingestion key in a hidden prompt. They do
 not accept a key on the command line. Each OpenClaw installation needs its own
 installation ID and key.
 
+When OpenClaw traces must join another service, inject the shared customer
+identity key as `SEMANTIC_LAYER_IDENTITY_KEY` for the first setup process. Use
+a secret manager and do not put the value in a command or log. Setup removes
+the variable before it starts OpenClaw child processes. A rerun rejects a
+different identity key.
+
 Container setup preserves every config value outside the fields that Semantic
 Layer manages. This includes Gateway, Slack, Latitude, and all other plugins. It
 installs against a private config first. It writes the owner only credentials

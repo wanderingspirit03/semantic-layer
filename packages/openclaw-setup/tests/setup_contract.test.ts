@@ -915,13 +915,34 @@ describe('client setup command contract', () => {
       );
       expect(JSON.parse(await readFile(credentialPath, 'utf8'))).toEqual({
         ingestKey: 'ingest-secret',
-        identityKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        identityKey: 'i'.repeat(64),
         installationId,
       });
       const credentialsBeforeFailedRotation = await readFile(
         credentialPath,
         'utf8',
       );
+      const configBeforeIdentityMismatch = await readFile(
+        openClawConfigPath,
+        'utf8',
+      );
+      process.env.SEMANTIC_LAYER_IDENTITY_KEY = 'j'.repeat(64);
+      await expect(
+        main([
+          'setup',
+          '--container',
+          '--endpoint',
+          endpoint,
+          '--service-name',
+          'customer-openclaw-vm-01',
+          '--installation-id',
+          installationId,
+        ]),
+      ).resolves.toBe(1);
+      expect(await readFile(credentialPath, 'utf8'))
+        .toBe(credentialsBeforeFailedRotation);
+      expect(await readFile(openClawConfigPath, 'utf8'))
+        .toBe(configBeforeIdentityMismatch);
       delete process.env.SEMANTIC_LAYER_INGEST_KEY;
       const errorOutput = vi
         .spyOn(process.stderr, 'write')

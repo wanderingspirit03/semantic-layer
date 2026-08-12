@@ -278,6 +278,11 @@ describe('runTaviTriggerAttempt', () => {
 
   it('routes concurrent enrolled attempts on one OTel 1.25 provider without mixing spans', async () => {
     const root = await privateRoot();
+    const latitudeBaseline = await latitudeEvidenceWithoutArcus([
+      'tenant-a',
+      'tenant-b',
+      'not-enrolled',
+    ]);
     const latitude = new InMemorySpanExporter();
     const provider = new BasicTracerProvider();
     const router = createTaviOpenTelemetryAttemptRouter();
@@ -343,6 +348,7 @@ describe('runTaviTriggerAttempt', () => {
       'tenant-b-model',
       'tenant-b-tool',
     ]);
+    expect(latitudeEvidence(latitude)).toEqual(latitudeBaseline);
     await provider.shutdown();
   });
 
@@ -1046,6 +1052,39 @@ function emitRichThroughTracer(tracer: Tracer, marker: string): void {
     tool.end();
   });
   agent.end();
+}
+
+async function latitudeEvidenceWithoutArcus(
+  markers: readonly string[],
+): Promise<ReturnType<typeof latitudeEvidence>> {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider();
+  provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+  const tracer = provider.getTracer('tavi-test', '1.0.0', {
+    schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+  });
+  for (const marker of markers) emitRichThroughTracer(tracer, marker);
+  const evidence = latitudeEvidence(exporter);
+  await provider.shutdown();
+  return evidence;
+}
+
+function latitudeEvidence(exporter: InMemorySpanExporter): Array<{
+  name: string;
+  parent: string | null;
+  operation: unknown;
+  toolName: unknown;
+  schemaUrl: string | undefined;
+}> {
+  const spans = exporter.getFinishedSpans();
+  const namesById = new Map(spans.map((span) => [span.spanContext().spanId, span.name]));
+  return spans.map((span) => ({
+    name: span.name,
+    parent: span.parentSpanId ? namesById.get(span.parentSpanId) ?? null : null,
+    operation: span.attributes['gen_ai.operation.name'],
+    toolName: span.attributes['gen_ai.tool.name'],
+    schemaUrl: span.instrumentationLibrary.schemaUrl,
+  })).sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function otelSpan(

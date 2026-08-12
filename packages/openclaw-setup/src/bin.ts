@@ -470,6 +470,8 @@ async function setup(options: {
     return 0;
   }
 
+  const configuredIdentityKey = consumeSetupSecretEnvironment().identityKey;
+
   let prompt: ReturnType<typeof createInterface> | undefined;
   const ask = async (label: string): Promise<string> => {
     prompt ??= createInterface({ input: stdin, output: stdout });
@@ -579,10 +581,19 @@ async function setup(options: {
     }
     let credentials: SetupCredentials;
     try {
+      if (
+        existingCredentials
+        && configuredIdentityKey
+        && existingCredentials.identityKey !== configuredIdentityKey
+      ) {
+        throw new TypeError(
+          'Configured identity key does not match the existing setup state.',
+        );
+      }
       credentials = createManagedSetupCredentials(
         ingestKey,
         existingCredentials,
-        undefined,
+        configuredIdentityKey,
         assignedInstallationId,
       );
     } catch (error) {
