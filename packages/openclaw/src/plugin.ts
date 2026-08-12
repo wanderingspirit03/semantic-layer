@@ -1436,7 +1436,7 @@ class CaptureRuntime {
         shutdownDeadlineMs: this.shutdownDeadlineMs,
         queueCapacityBytes: 64 * 1024 * 1024,
       });
-      const correlationTaskId = this.consumeCorrelation(runId);
+      const correlationTaskId = this.pendingCorrelation(runId);
       const source = createRunSource({
         runId,
         conversationId,
@@ -1457,7 +1457,13 @@ class CaptureRuntime {
         unavailableHooks: [...this.unavailableHooks],
       });
       const lifecycle = capture.installSource(source.source);
-      source.start();
+      const started = source.start();
+      if (!started.accepted) {
+        throw new Error('OpenClaw run root was not admitted by capture.');
+      }
+      if (correlationTaskId) {
+        this.markCorrelationConsumed(runId, correlationTaskId);
+      }
       const run: Run = {
         runId,
         sessionKeys: new Set(),
@@ -1496,10 +1502,14 @@ class CaptureRuntime {
     }
   }
 
-  private consumeCorrelation(runId: string): string | undefined {
+  private pendingCorrelation(runId: string): string | undefined {
     this.pruneExpiredCorrelations();
+    return this.pendingCorrelations.get(runId)?.taskId;
+  }
+
+  private markCorrelationConsumed(runId: string, taskId: string): void {
     const binding = this.pendingCorrelations.get(runId);
-    if (!binding) return undefined;
+    if (!binding || binding.taskId !== taskId) return;
     this.pendingCorrelations.delete(runId);
     if (this.consumedCorrelations.size >= MAX_PENDING_CORRELATIONS) {
       const oldest = this.consumedCorrelations.keys().next().value;
@@ -1509,7 +1519,6 @@ class CaptureRuntime {
       runId,
       Date.now() + CORRELATION_BINDING_TTL_MS,
     );
-    return binding.taskId;
   }
 
   private pruneExpiredCorrelations(): void {

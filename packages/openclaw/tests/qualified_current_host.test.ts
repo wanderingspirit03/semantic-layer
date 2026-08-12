@@ -8,6 +8,7 @@ import {
 } from 'openclaw-qualified-current/plugin-sdk/plugin-entry';
 import { validateJsonSchemaValue as validateWithCurrentHost } from 'openclaw-qualified-current/plugin-sdk/config-schema';
 import { createPluginDefinition, REQUIRED_HOOKS } from '../src/plugin.js';
+import { verifyQualifiedCorrelationBundle } from './qualified_correlation_bundle.js';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 type CurrentHookName = Parameters<CurrentPluginApi['on']>[0];
@@ -15,6 +16,18 @@ const CURRENT_REQUIRED_HOOKS =
   REQUIRED_HOOKS satisfies readonly CurrentHookName[];
 
 describe('exact OpenClaw 2026.7.1-2 host contract', () => {
+  it('seals protected correlation through the installed host entry', async () => {
+    await verifyQualifiedCorrelationBundle('2026.7.1-2', (plugin, api) => {
+      const entry = defineCurrentPluginEntry({
+        id: plugin.id,
+        name: plugin.name,
+        description: plugin.description,
+        register: plugin.register,
+      });
+      entry.register(api as CurrentPluginApi);
+    });
+  });
+
   it('loads the plugin through the installed current entry shape with every required typed hook', () => {
     const hooks: string[] = [];
     const gatewayMethods: string[] = [];

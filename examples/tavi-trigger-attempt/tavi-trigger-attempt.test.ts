@@ -76,6 +76,13 @@ describe('runTaviTriggerAttempt', () => {
     const deliveries: TaviTriggerDelivery[] = [];
     const config = tenant();
     const source = createOpenTelemetrySource({ version: '1.25.1' });
+    const latitude = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider();
+    provider.addSpanProcessor(new SimpleSpanProcessor(latitude));
+    provider.addSpanProcessor(source.spanProcessor);
+    const tracer = provider.getTracer('tavi-attempt-local', '1.0.0', {
+      schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+    });
 
     await expect(runTaviTriggerAttempt({
       tenant: config,
@@ -85,7 +92,7 @@ describe('runTaviTriggerAttempt', () => {
       openTelemetry: { source },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
-        emitOrchestratorOpenTelemetry(source, '8', 'ralph-loop');
+        emitOrchestratorThroughTracer(tracer, 'ralph-loop');
         return 'complete';
       },
     })).resolves.toBe('complete');
@@ -109,6 +116,9 @@ describe('runTaviTriggerAttempt', () => {
         attempt: 4,
       },
     });
+    expect(latitude.getFinishedSpans().map((span) => span.name))
+      .toEqual(['ralph-loop-agent']);
+    await provider.shutdown();
   });
 
   it('rejects an orchestrator without exact GenAI invoke-agent evidence', async () => {
@@ -1052,6 +1062,15 @@ function emitRichThroughTracer(tracer: Tracer, marker: string): void {
     tool.end();
   });
   agent.end();
+}
+
+function emitOrchestratorThroughTracer(tracer: Tracer, marker: string): void {
+  tracer.startSpan(`${marker}-agent`, {
+    attributes: {
+      'gen_ai.operation.name': 'invoke_agent',
+      'gen_ai.agent.name': marker,
+    },
+  }).end();
 }
 
 async function latitudeEvidenceWithoutArcus(

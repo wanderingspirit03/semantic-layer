@@ -67,9 +67,9 @@ join these bundles. Keep different customers on different identity keys.
 
 ## Task integration
 
-Use an attempt-local provider when Tavi creates a new provider for one Trigger
-attempt and shuts it down with that attempt. Add Latitude and the fresh Arcus
-source to that provider. Pass the source without a router:
+Choose the provider attachment from the
+[supported integration seam](../../docs/sdk/integrations.md). The following
+small form is for an attempt-local provider:
 
 ```ts
 const source = createOpenTelemetrySource({ version: '1.25.1' });
@@ -82,13 +82,8 @@ await runTaviTriggerAttempt({
 });
 ```
 
-Import the provider and processor types from Tavi's direct
-`@opentelemetry/sdk-trace-base@1.25.1` dependency. Do not import those types
-from Trigger's nested OpenTelemetry packages.
-
-Use the router only when attempts share one process-wide provider. Add its
-processor beside Latitude exactly once. OpenTelemetry 1.25 cannot remove an
-attempt processor safely from a shared provider.
+The full example below uses a shared provider. It creates one router when the
+worker starts and adds that router beside Latitude exactly once:
 
 ```ts
 import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
@@ -97,7 +92,7 @@ const semanticLayerAttemptRouter = createTaviOpenTelemetryAttemptRouter();
 existingTracerProvider.addSpanProcessor(semanticLayerAttemptRouter.spanProcessor);
 ```
 
-Create one cancellation registry beside the router. Trigger's task-local
+Create one cancellation registry beside the provider attachment. Trigger's task-local
 `onCancel` hook aborts the matching attempt and waits for its bounded telemetry
 finalization. Create a new OpenTelemetry source inside every enrolled attempt.
 
@@ -143,12 +138,9 @@ The wrapper maps only public fields from Trigger 4.4.4. It uses `ctx.run.id`,
 `ctx.attempt.number`. Trigger 4.4.4 does not expose a replay relation. A replay
 therefore appears as a new run under the same research task.
 
-Keep Tavi's existing provider and Latitude processor. Add only the shared
-router processor. The router uses the direct OpenTelemetry 1.25 types owned by
-Tavi. It does not import a processor from Trigger's nested OpenTelemetry 2.x
-packages. It remembers which attempt started each span and sends the completed
-span only to that attempt's Semantic Layer source. Spans outside an enrolled
-attempt are ignored by Arcus and remain available to Latitude.
+For an attempt-local provider, omit `router` from `openTelemetry`. For a shared
+provider, keep the router shown above. Spans outside an enrolled attempt remain
+available to Latitude.
 
 Tavi's tool spans need these attributes:
 
@@ -237,19 +229,10 @@ through protected task and execution IDs.
 
 ## OpenClaw relation
 
-Tavi creates one opaque research task ID before it sends the OpenClaw request.
-It also chooses the OpenClaw run ID used as the `chat.send` idempotency key.
-Before `chat.send`, Tavi calls the admin-only Gateway method:
-
-```text
-semantic-layer.correlation.bind
-{ "runId": "<chat.send idempotency key>", "taskId": "<research task ID>" }
-```
-
-Tavi waits for `{ "accepted": true }`, then sends `chat.send` with the same run
-ID. The plugin consumes the binding once when that run starts. The binding is
-kept only in bounded memory. Repeating the same binding is safe. A conflicting,
-late, expired, or invalid binding is rejected without echoing either ID.
+Use the plugin's
+[trusted cross-system correlation contract](../../packages/openclaw/README.md#trusted-cross-system-correlation).
+Tavi creates the task and run IDs, completes that bind before `chat.send`, and
+uses the run ID as the `chat.send` idempotency key.
 
 Deep People forwards the same task ID unchanged to Trigger as `researchId`.
 The OpenClaw VM and Trigger installation use separate ingestion keys and
@@ -257,9 +240,8 @@ installation IDs, but they use the same customer identity key. Semantic Layer
 then writes the same protected task token in both bundles. Cloud ingest and the
 setup command need no new field.
 
-A task ID inside a prompt, message, tool input, or tool output is not trusted
-correlation. The reader does not inspect private content or guess a relation.
-If binding fails, Tavi must not claim the OpenClaw to Trigger link.
+Deep People must forward the same task ID without reading it from customer
+content. If binding fails, Tavi must not claim the OpenClaw to Trigger link.
 
 ## Latitude compatibility
 

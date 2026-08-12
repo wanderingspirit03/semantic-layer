@@ -241,6 +241,21 @@ describe('OpenClaw run capture', () => {
     }
   });
 
+  it('retains a binding when capture does not admit the run root', () => {
+    const harness = captureHarness({ rejectOpen: true });
+    const { handlers, bindCorrelation } = registerHarness(harness.dependencies);
+    expect(bindCorrelation({ runId: 'run-rejected', taskId: 'research-rejected' }))
+      .toEqual({ accepted: true });
+
+    handlers.before_model_resolve!(
+      { runId: 'run-rejected', prompt: 'start' },
+      { runId: 'run-rejected', sessionId: 'session-rejected' },
+    );
+
+    expect(bindCorrelation({ runId: 'run-rejected', taskId: 'research-rejected' }))
+      .toEqual({ accepted: true });
+  });
+
   it('keeps local capture and sealing active when the durable spool is full', async () => {
     const harness = captureHarness({
       pressure: 'full',
@@ -1697,6 +1712,7 @@ function captureHarness(
     pressure?: 'ok' | 'full';
     enqueueState?: 'pending' | 'awaiting_spool_admission';
     enqueueError?: Error;
+    rejectOpen?: boolean;
   } = {},
 ) {
   const captures: unknown[] = [];
@@ -1719,6 +1735,13 @@ function captureHarness(
           const sink: SourceSink = {
             openTrace(input) {
               opened.push(input);
+              if (behavior.rejectOpen) {
+                return {
+                  accepted: false as const,
+                  reason: 'fixture_rejected',
+                  settled: Promise.resolve(),
+                };
+              }
               return accepted(`root-${number}`, {
                 runId: String(input.nativeIdentity),
                 traceId: `trace-${number}`,

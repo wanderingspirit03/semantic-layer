@@ -8,6 +8,7 @@ import {
 } from 'openclaw/plugin-sdk/plugin-entry';
 import { validateJsonSchemaValue as validateWithMinimumHost } from 'openclaw/plugin-sdk/config-schema';
 import { createPluginDefinition, REQUIRED_HOOKS } from '../src/plugin.js';
+import { verifyQualifiedCorrelationBundle } from './qualified_correlation_bundle.js';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 type MinimumHookName = Parameters<MinimumPluginApi['on']>[0];
@@ -15,6 +16,18 @@ const MINIMUM_REQUIRED_HOOKS =
   REQUIRED_HOOKS satisfies readonly MinimumHookName[];
 
 describe('exact OpenClaw 2026.5.5 host contract', () => {
+  it('seals protected correlation through the installed host entry', async () => {
+    await verifyQualifiedCorrelationBundle('2026.5.5', (plugin, api) => {
+      const entry = defineMinimumPluginEntry({
+        id: plugin.id,
+        name: plugin.name,
+        description: plugin.description,
+        register: plugin.register,
+      });
+      entry.register(api as MinimumPluginApi);
+    });
+  });
+
   it('loads the plugin through the installed minimum entry shape with every required typed hook', () => {
     const hooks: string[] = [];
     const gatewayMethods: string[] = [];
