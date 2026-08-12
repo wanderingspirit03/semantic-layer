@@ -79,7 +79,7 @@ def test_projects_protected_run_correlation_on_root_start() -> None:
     correlation = {
         "task_id": f"task_{'a' * 64}",
         "execution": {
-            "system": "trigger.dev",
+            "system": "job-runner",
             "run_id": f"exec_{'b' * 64}",
             "parent_run_id": f"exec_{'c' * 64}",
             "root_run_id": f"exec_{'d' * 64}",

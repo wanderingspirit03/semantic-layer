@@ -68,18 +68,18 @@ capture session open for work that belongs in one bundle. The
 Pass exact cross process identities when separate workers belong to one task:
 
 ```ts
-await capture.observe('search-loop', {
+await capture.observe('worker', {
   correlation: {
-    taskId: researchId,
+    taskId: jobId,
     execution: {
-      system: 'trigger.dev',
-      runId: triggerRunId,
-      parentRunId: triggerParentRunId,
-      rootRunId: triggerRootRunId,
-      attempt: triggerAttemptNumber,
+      system: 'job-runner',
+      runId: workerRunId,
+      parentRunId: parentWorkerRunId,
+      rootRunId: rootWorkerRunId,
+      attempt: workerAttemptNumber,
     },
   },
-}, runSearch);
+}, runWorker);
 ```
 
 Python uses `task_id`, `run_id`, `parent_run_id`, `root_run_id`, and `attempt`.

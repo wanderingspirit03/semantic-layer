@@ -1,4 +1,8 @@
-# Tavi Trigger attempt capture
+# Tavi Trigger capture pilot
+
+This directory contains code for one customer pilot. It is not part of the
+main SDK or its supported integration list. Keep the pilot implementation,
+tests, rollout steps, and customer names inside this directory.
 
 The example wraps one Trigger task attempt. It uses
 `semantic-layer-capture@0.2.0-beta.2` and
@@ -67,9 +71,9 @@ join these bundles. Keep different customers on different identity keys.
 
 ## Task integration
 
-Choose the provider attachment from the
-[supported integration seam](../../docs/sdk/integrations.md). The following
-small form is for an attempt-local provider:
+Choose the provider attachment based on how long the provider lives. When one
+provider belongs to one attempt, add a fresh Arcus processor directly and shut
+the provider down with the attempt. The following form uses that pattern:
 
 ```ts
 const source = createOpenTelemetrySource({ version: '1.25.1' });
@@ -82,8 +86,11 @@ await runTaviTriggerAttempt({
 });
 ```
 
-The full example below uses a shared provider. It creates one router when the
-worker starts and adds that router beside Latitude exactly once:
+When attempts share one provider, add one permanent attempt router so
+concurrent tenants cannot mix spans. Use Tavi's direct OpenTelemetry `1.25.1`
+types, and do not use processor classes from Trigger's nested OpenTelemetry
+`2.x` packages. The following form creates one router when the worker starts
+and adds it beside Latitude exactly once:
 
 ```ts
 import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
@@ -313,7 +320,7 @@ receives its expected spans before closing the rollback.
 Run the example tests and type check from the repository root:
 
 ```sh
-npm ci --prefix examples/tavi-trigger-attempt
-npm test --prefix examples/tavi-trigger-attempt
-npm run typecheck --prefix examples/tavi-trigger-attempt
+npm ci --prefix pilots/tavi-trigger-attempt
+npm test --prefix pilots/tavi-trigger-attempt
+npm run typecheck --prefix pilots/tavi-trigger-attempt
 ```

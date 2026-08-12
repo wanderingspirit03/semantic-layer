@@ -79,30 +79,30 @@ describe('persisted OpenClaw capture', () => {
       });
       expect(trace).not.toContain(taskId);
       expect(trace).not.toContain(identityKey);
-      const triggerCapture = createCapture({
+      const workerCapture = createCapture({
         output,
-        serviceName: 'trigger-correlation',
+        serviceName: 'worker-correlation',
         identityKey,
       });
-      await triggerCapture.observe('trigger-attempt', {
+      await workerCapture.observe('worker-attempt', {
         correlation: {
           taskId,
           execution: {
-            system: 'trigger.dev',
-            runId: 'trigger-run-correlated',
+            system: 'job-runner',
+            runId: 'worker-run-correlated',
           },
         },
       }, async () => 'complete');
-      const triggerClosed = await triggerCapture.shutdown();
-      const triggerTrace = await readFile(
-        join(triggerClosed.artifactPath, 'trace.jsonl'),
+      const workerClosed = await workerCapture.shutdown();
+      const workerTrace = await readFile(
+        join(workerClosed.artifactPath, 'trace.jsonl'),
         'utf8',
       );
-      const triggerStart = triggerTrace.trim().split('\n')
+      const workerStart = workerTrace.trim().split('\n')
         .map((line) => JSON.parse(line))
         .find((row) => row.kind === 'run.start');
       expect(start.data.correlation.task_id)
-        .toBe(triggerStart.data.correlation.task_id);
+        .toBe(workerStart.data.correlation.task_id);
       await expect(validateArtifact(artifactPath, { secretValues: [taskId, identityKey] }))
         .resolves.toMatchObject({ valid: true, issues: [] });
     } finally {

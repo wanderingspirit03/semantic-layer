@@ -203,25 +203,25 @@ describe('runtime production guarantees', () => {
       identityKey,
     });
 
-    await parent.observe('ralph-loop', {
+    await parent.observe('orchestrator', {
       correlation: {
         taskId: 'research-task-private',
         execution: {
-          system: 'trigger.dev',
-          runId: 'trigger-parent-private',
-          rootRunId: 'trigger-parent-private',
+          system: 'job-runner',
+          runId: 'worker-parent-private',
+          rootRunId: 'worker-parent-private',
           attempt: 1,
         },
       },
     }, async () => 'parent');
-    await child.observe('search-loop', {
+    await child.observe('worker', {
       correlation: {
         taskId: 'research-task-private',
         execution: {
-          system: 'trigger.dev',
-          runId: 'trigger-child-private',
-          parentRunId: 'trigger-parent-private',
-          rootRunId: 'trigger-parent-private',
+          system: 'job-runner',
+          runId: 'worker-child-private',
+          parentRunId: 'worker-parent-private',
+          rootRunId: 'worker-parent-private',
           attempt: 1,
         },
       },
@@ -243,7 +243,7 @@ describe('runtime production guarantees', () => {
     expect(childStart.data.correlation).toMatchObject({
       task_id: parentStart.data.correlation.task_id,
       execution: {
-        system: 'trigger.dev',
+        system: 'job-runner',
         parent_run_id: parentStart.data.correlation.execution.run_id,
         root_run_id: parentStart.data.correlation.execution.run_id,
         attempt: 1,
@@ -252,7 +252,7 @@ describe('runtime production guarantees', () => {
     expect(childStart.data.correlation.execution.run_id)
       .not.toBe(parentStart.data.correlation.execution.run_id);
     expect(`${parentText}\n${childText}`).not.toContain('research-task-private');
-    expect(`${parentText}\n${childText}`).not.toContain('trigger-parent-private');
+    expect(`${parentText}\n${childText}`).not.toContain('worker-parent-private');
     await expect(Promise.all([
       validateArtifact(parentClosed.artifactPath),
       validateArtifact(childClosed.artifactPath),
@@ -270,10 +270,10 @@ describe('runtime production guarantees', () => {
       identityKey: 'fixture-run-correlation-gap-key',
     });
 
-    await capture.observe('ralph-loop', {
+    await capture.observe('orchestrator', {
       correlation: {
         taskId: '',
-        execution: { system: 'trigger.dev', runId: '' },
+        execution: { system: 'job-runner', runId: '' },
       },
     }, async () => 'customer-result');
 
@@ -304,7 +304,7 @@ describe('runtime production guarantees', () => {
         identityKey: 'fixture-missing-execution-key',
       });
 
-      await capture.observe('ralph-loop', {
+      await capture.observe('orchestrator', {
         correlation: {
           taskId: 'research-task-private',
           execution: execution as never,
@@ -335,14 +335,14 @@ describe('runtime production guarantees', () => {
       identityKey: 'fixture-optional-correlation-gap-key',
     });
 
-    await capture.observe('search-loop', {
+    await capture.observe('worker', {
       correlation: {
         taskId: 'research-task-private',
         execution: {
-          system: 'trigger.dev',
-          runId: 'trigger-child-private',
+          system: 'job-runner',
+          runId: 'worker-child-private',
           parentRunId: '',
-          rootRunId: 'trigger-root-private',
+          rootRunId: 'worker-root-private',
           attempt: 1,
         },
       },
@@ -353,7 +353,7 @@ describe('runtime production guarantees', () => {
     const start = rows.find((row) => row.kind === 'run.start');
     const correlation = start?.data.correlation as Record<string, any> | undefined;
     expect(correlation).toMatchObject({
-      execution: { system: 'trigger.dev', attempt: 1 },
+      execution: { system: 'job-runner', attempt: 1 },
     });
     expect(correlation?.execution).not.toHaveProperty('parent_run_id');
     expect(correlation?.execution).toHaveProperty('root_run_id');

@@ -26,7 +26,12 @@ const roots: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(roots.splice(0).map((root) => rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 50,
+  })));
 });
 
 describe('runTaviTriggerAttempt', () => {

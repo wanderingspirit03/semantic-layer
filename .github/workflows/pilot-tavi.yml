@@ -1,0 +1,38 @@
+name: Tavi Trigger pilot
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tavi-trigger-pilot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.16.0"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the local capture and cloud packages
+        run: |
+          pnpm --filter semantic-layer-capture run build
+          pnpm --filter semantic-layer-cloud run build
+      - name: Test the Trigger attempt integration
+        run: |
+          npm ci --prefix pilots/tavi-trigger-attempt
+          npm test --prefix pilots/tavi-trigger-attempt
+          npm run typecheck --prefix pilots/tavi-trigger-attempt
