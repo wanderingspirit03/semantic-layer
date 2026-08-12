@@ -17,6 +17,7 @@ const CURRENT_REQUIRED_HOOKS =
 describe('exact OpenClaw 2026.7.1-2 host contract', () => {
   it('loads the plugin through the installed current entry shape with every required typed hook', () => {
     const hooks: string[] = [];
+    const gatewayMethods: string[] = [];
     const plugin = createPluginDefinition({
       createRunCapture: () => {
         throw new Error('capture is not used during registration');
@@ -39,11 +40,15 @@ describe('exact OpenClaw 2026.7.1-2 host contract', () => {
       on(name: CurrentHookName) {
         hooks.push(name);
       },
+      registerGatewayMethod(name) {
+        gatewayMethods.push(name);
+      },
       logger: { debug() {}, info() {}, warn() {}, error() {} },
       runtime: { version: '2026.7.1-2' },
     } as CurrentPluginApi);
 
     expect(hooks).toEqual(CURRENT_REQUIRED_HOOKS);
+    expect(gatewayMethods).toEqual(['semantic-layer.correlation.bind']);
   });
 
   it('accepts the published plugin configuration with the installed current schema validator', async () => {

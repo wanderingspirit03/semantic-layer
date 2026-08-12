@@ -21,7 +21,8 @@ Test the complete deployment in staging before production.
 Install the exact package pair in Tavi's Trigger task package:
 
 ```sh
-pnpm add semantic-layer-capture@0.2.0-beta.2 \
+npm install --save-exact \
+  semantic-layer-capture@0.2.0-beta.2 \
   semantic-layer-cloud@0.1.0-pilot.4
 ```
 
@@ -66,11 +67,28 @@ join these bundles. Keep different customers on different identity keys.
 
 ## Task integration
 
-Create one attempt router when the Trigger worker starts. Add its span
-processor to Tavi's existing provider exactly once, beside the Latitude
-processor. Do not add an attempt source directly to the provider. OpenTelemetry
-1.25 does not provide a safe way to remove that processor, and direct setup can
-mix spans from concurrent attempts.
+Use an attempt-local provider when Tavi creates a new provider for one Trigger
+attempt and shuts it down with that attempt. Add Latitude and the fresh Arcus
+source to that provider. Pass the source without a router:
+
+```ts
+const source = createOpenTelemetrySource({ version: '1.25.1' });
+attemptProvider.addSpanProcessor(source.spanProcessor);
+
+await runTaviTriggerAttempt({
+  // The provider and source belong only to this attempt.
+  openTelemetry: { source },
+  // ...
+});
+```
+
+Import the provider and processor types from Tavi's direct
+`@opentelemetry/sdk-trace-base@1.25.1` dependency. Do not import those types
+from Trigger's nested OpenTelemetry packages.
+
+Use the router only when attempts share one process-wide provider. Add its
+processor beside Latitude exactly once. OpenTelemetry 1.25 cannot remove an
+attempt processor safely from a shared provider.
 
 ```ts
 import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
@@ -100,6 +118,7 @@ export const researchTask = task({
     const source = createOpenTelemetrySource({ version: '1.25.1' });
     return await runTaviTriggerAttempt({
       tenant: trustedTenantOrNull,
+      successfulAttemptProfile: 'orchestrator',
       trigger: triggerIdentityFromContext(
         ctx,
         stableResearchId,
@@ -165,14 +184,20 @@ each attempt. It reports `acknowledged` only after the cloud service confirms
 the expected bundle digest. A local pending spool is not considered safe in an
 isolated Trigger worker.
 
-A successful research must pass the `rich-agent` profile before upload. It
-must contain one root and outcome, one model request and response, and one tool
-call and result under the same root. A successful but empty capture reports
-`capture_failed` and is not uploaded. A failed or cancelled research uses
-structural validation because a provider can fail before a model or tool
-result exists. Named loss records remain part of that bundle. Missing required
-correlation, rejected records, an invalid bundle, or an unexplained capture
-error prevents upload.
+A successful `ralph-loop` uses `successfulAttemptProfile: "orchestrator"`. It
+must contain protected Trigger correlation, a completed attempt outcome, and a
+complete GenAI `invoke_agent` scope from the exact 1.42 schema. It does not need
+a model or tool pair.
+
+A successful `search-loop` keeps the default `rich-agent` profile. It must also
+contain a model request and response and a tool call and result under the same
+root. Do not select a profile by task name inside the shared wrapper. The task
+owner passes the profile explicitly.
+
+A successful but empty capture reports `capture_failed` and is not uploaded.
+A failed or cancelled research uses structural validation because a provider
+can fail before a model or tool result exists. Missing correlation, rejected
+records, an invalid bundle, or an unexplained capture error prevents upload.
 
 The wrapper sends raw Trigger correlation through the capture API. Semantic
 Layer protects the task, current run, parent run, and root run IDs before it
@@ -190,25 +215,66 @@ does not settle before the deadline, the bundle reports `capture_failed` and is
 not uploaded. The wrapper still preserves the exact value later thrown by the
 task. A forced worker stop cannot run cleanup. The example does not claim
 evidence delivery after a forced stop.
-Set the capture and upload deadlines so their total fits inside Tavi's Trigger
-cancellation grace period.
+Use these exact deadlines:
+
+```ts
+{
+  shutdownDeadlineMs: 10_000,
+  uploadDeadlineMs: 10_000,
+  finalizationDeadlineMs: 25_000,
+}
+```
+
+The final limit covers capture shutdown, validation, spool admission, upload,
+and uploader shutdown. It leaves five seconds inside Trigger's 30 second
+cancellation grace period. A deadline reports `timed_out` without changing the
+customer result or error.
 
 The tests also run a parent ralph loop and child search loop through fresh
-OpenTelemetry sources. Each bundle contains a complete model pair and tool
-pair, passes the `rich-agent` validation profile, receives its own upload
-acknowledgement, and joins through protected task and execution IDs.
+OpenTelemetry sources. The parent passes the orchestrator rule. The child
+passes the rich agent rule. Both receive an upload acknowledgement and join
+through protected task and execution IDs.
 
 ## OpenClaw relation
 
-Trigger parent and child bundles join as soon as both receive the same
-`tenantTaskId`. Joining the originating OpenClaw bundle needs one more exact
-input at the OpenClaw run start. OpenClaw capture must receive the same
-`tenantTaskId` as `correlation.taskId` and use the same customer identity key.
+Tavi creates one opaque research task ID before it sends the OpenClaw request.
+It also chooses the OpenClaw run ID used as the `chat.send` idempotency key.
+Before `chat.send`, Tavi calls the admin-only Gateway method:
 
-A `tenantTaskId` that appears only inside a captured tool result is not enough.
-The reader does not inspect private content or guess a relation. Do not claim
-the OpenClaw to Trigger link until Tavi exposes the authoritative task ID at
-the OpenClaw run start and a staging trace proves the match.
+```text
+semantic-layer.correlation.bind
+{ "runId": "<chat.send idempotency key>", "taskId": "<research task ID>" }
+```
+
+Tavi waits for `{ "accepted": true }`, then sends `chat.send` with the same run
+ID. The plugin consumes the binding once when that run starts. The binding is
+kept only in bounded memory. Repeating the same binding is safe. A conflicting,
+late, expired, or invalid binding is rejected without echoing either ID.
+
+Deep People forwards the same task ID unchanged to Trigger as `researchId`.
+The OpenClaw VM and Trigger installation use separate ingestion keys and
+installation IDs, but they use the same customer identity key. Semantic Layer
+then writes the same protected task token in both bundles. Cloud ingest and the
+setup command need no new field.
+
+A task ID inside a prompt, message, tool input, or tool output is not trusted
+correlation. The reader does not inspect private content or guess a relation.
+If binding fails, Tavi must not claim the OpenClaw to Trigger link.
+
+## Latitude compatibility
+
+Keep the existing span names, parent relations, content fields, and
+Latitude-specific fields. Add only the GenAI 1.42 schema URL and these semantic
+operations:
+
+* `invoke_agent` on the agent root
+* `execute_tool` on tool execution spans
+* `chat`, `text_completion`, or `generate_content` on model spans
+
+These additions are compatible with the existing Latitude exporter. The exact
+OpenTelemetry 1.25 test keeps Latitude beside Arcus and proves that Latitude
+still receives the same spans. Tavi must repeat that check in staging with its
+real exporter before production.
 
 ## Staging checks
 
@@ -222,8 +288,8 @@ Run these checks before production:
 3. Run the deployed OpenTelemetry probe. Confirm Latitude and Arcus delivery.
 
 4. Run one synthetic `ralph-loop` that starts one `search-loop` child. Confirm
-   model and tool records, parent and child relation, valid bundles, and two
-   cloud acknowledgements.
+   the orchestrator root, the child's model and tool records, the parent and
+   child relation, valid bundles, and two cloud acknowledgements.
 
 5. Run a different tenant. It must create no Arcus files, spool, spans, or
    upload.
@@ -265,7 +331,7 @@ receives its expected spans before closing the rollback.
 Run the example tests and type check from the repository root:
 
 ```sh
-pnpm install --dir examples/tavi-trigger-attempt --ignore-workspace --frozen-lockfile
-pnpm --dir examples/tavi-trigger-attempt run test
-pnpm --dir examples/tavi-trigger-attempt run typecheck
+npm ci --prefix examples/tavi-trigger-attempt
+npm test --prefix examples/tavi-trigger-attempt
+npm run typecheck --prefix examples/tavi-trigger-attempt
 ```

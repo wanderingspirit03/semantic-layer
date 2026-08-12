@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -19,6 +19,8 @@ export type TrustedTaviTenantConfig = Readonly<{
   identityKey: string;
   uploadDeadlineMs?: number;
   shutdownDeadlineMs?: number;
+  /** Total capture, validation, upload, and shutdown budget. Defaults to 25 seconds. */
+  finalizationDeadlineMs?: number;
   fetch?: typeof globalThis.fetch;
 }>;
 
@@ -44,14 +46,18 @@ export type TaviTriggerDelivery = Readonly<{
 export type TaviOpenTelemetryAttachment = Readonly<{
   /** Create a fresh source for each Trigger attempt. */
   source: OpenTelemetrySource;
-  /** Process-wide router already attached once to Tavi's existing provider. */
-  router: TaviOpenTelemetryAttemptRouter;
+  /** Required only when attempts share one process-wide provider. */
+  router?: TaviOpenTelemetryAttemptRouter;
 }>;
+
+export type TaviSuccessfulAttemptProfile = 'orchestrator' | 'rich-agent';
 
 export type TaviTriggerAttemptOptions<T> = Readonly<{
   /** Null means the caller's trusted tenant lookup did not enable capture. */
   tenant: TrustedTaviTenantConfig | null;
   trigger: TaviTriggerIdentity;
+  /** Defaults to rich-agent. Orchestrators require only a completed invoke-agent root. */
+  successfulAttemptProfile?: TaviSuccessfulAttemptProfile;
   openTelemetry?: TaviOpenTelemetryAttachment;
   /** Connects Trigger's task-local onCancel hook to bounded finalization. */
   cancellation?: TaviTriggerCancellation;
@@ -99,13 +105,15 @@ export async function runTaviTriggerAttempt<T>(
       installationId: tenant.installationId,
       identityKey: tenant.identityKey,
       secretValues: [tenant.ingestKey, tenant.identityKey],
-      shutdownDeadlineMs: tenant.shutdownDeadlineMs ?? 10_000,
+      shutdownDeadlineMs: positiveDeadline(tenant.shutdownDeadlineMs, 10_000),
     });
     if (options.openTelemetry) {
       capture.installSource(options.openTelemetry.source);
-      unregisterOpenTelemetry = options.openTelemetry.router.registerSource(
-        options.openTelemetry.source,
-      );
+      if (options.openTelemetry.router) {
+        unregisterOpenTelemetry = options.openTelemetry.router.registerSource(
+          options.openTelemetry.source,
+        );
+      }
     }
   } catch {
     settle(unregisterOpenTelemetry);
@@ -122,13 +130,16 @@ export async function runTaviTriggerAttempt<T>(
   let taskOutcome: 'pending' | 'succeeded' | 'failed' = 'pending';
   let finalization: Promise<void> | undefined;
   const finalize = (): Promise<void> => {
-    finalization ??= finalizeAttempt({
+    finalization ??= finalizeWithinDeadline({
       capture: capture!,
       unregisterOpenTelemetry,
       attemptDirectory,
       tenant,
+      trigger: options.trigger,
+      successfulAttemptProfile: options.successfulAttemptProfile ?? 'rich-agent',
       successful: () => taskOutcome === 'succeeded',
-      reportDelivery: options.reportDelivery,
+    }).then(async (delivery) => {
+      await reportSafely(options.reportDelivery, delivery);
     }).finally(() => { options.cancellation?.completeTelemetry(); });
     return finalization;
   };
@@ -158,7 +169,7 @@ export async function runTaviTriggerAttempt<T>(
       },
       ...(signal ? { cancellationSignal: signal } : {}),
     },
-    async () => options.openTelemetry
+    async () => options.openTelemetry?.router
       ? await options.openTelemetry.router.runWithSource(
         options.openTelemetry.source,
         async () => await options.task({ signal }),
@@ -184,19 +195,63 @@ export async function runTaviTriggerAttempt<T>(
   }
 }
 
+type FinalizationControl = {
+  expired: boolean;
+  expiresAt: number;
+  uploader?: CloudUploader;
+};
+
+async function finalizeWithinDeadline(input: {
+  capture: ReturnType<typeof createCapture>;
+  unregisterOpenTelemetry?: () => void;
+  attemptDirectory: string;
+  tenant: TrustedTaviTenantConfig;
+  trigger: TaviTriggerIdentity;
+  successfulAttemptProfile: TaviSuccessfulAttemptProfile;
+  successful: () => boolean;
+}): Promise<TaviTriggerDelivery> {
+  const deadlineMs = positiveDeadline(input.tenant.finalizationDeadlineMs, 25_000);
+  const control: FinalizationControl = {
+    expired: false,
+    expiresAt: Date.now() + deadlineMs,
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = finalizeAttempt({ ...input, control }).catch(() => (
+    { status: 'capture_failed' } as const
+  ));
+  const timeout = new Promise<TaviTriggerDelivery>((resolve) => {
+    timer = setTimeout(() => {
+      control.expired = true;
+      settle(input.unregisterOpenTelemetry);
+      if (control.uploader) {
+        void control.uploader.shutdown().catch(() => {});
+      }
+      resolve({ status: 'timed_out' });
+    }, deadlineMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function finalizeAttempt(input: {
   capture: ReturnType<typeof createCapture>;
   unregisterOpenTelemetry?: () => void;
   attemptDirectory: string;
   tenant: TrustedTaviTenantConfig;
+  trigger: TaviTriggerIdentity;
+  successfulAttemptProfile: TaviSuccessfulAttemptProfile;
   successful: () => boolean;
-  reportDelivery?: (delivery: TaviTriggerDelivery) => void;
-}): Promise<void> {
+  control: FinalizationControl;
+}): Promise<TaviTriggerDelivery> {
   let captureHealthy = true;
 
   let artifactPath: string | undefined;
   try {
     const closed = await input.capture.shutdown();
+    if (input.control.expired) return { status: 'timed_out' };
     if (
       closed.state !== 'closed'
       || closed.rejected !== 0
@@ -205,11 +260,25 @@ async function finalizeAttempt(input: {
       captureHealthy = false;
     } else {
       artifactPath = closed.artifactPath;
+      const successfulProfile = input.successful()
+        ? input.successfulAttemptProfile
+        : undefined;
       const validation = await validateArtifact(artifactPath, {
-        profile: input.successful() ? 'rich-agent' : 'structural',
+        profile: successfulProfile === 'rich-agent' ? 'rich-agent' : 'structural',
+        ...(successfulProfile === 'orchestrator'
+          ? {
+              requiredEvidence: ['root', 'delivery'] as const,
+              requiredSourceActivity: ['generic:otel'] as const,
+            }
+          : {}),
         secretValues: [input.tenant.ingestKey, input.tenant.identityKey],
       });
+      if (input.control.expired) return { status: 'timed_out' };
       if (!validation.valid) captureHealthy = false;
+      if (
+        successfulProfile === 'orchestrator'
+        && !await validOrchestratorArtifact(artifactPath, input.trigger)
+      ) captureHealthy = false;
       if ((closed.losses.missing_correlation_identity ?? 0) !== 0) {
         captureHealthy = false;
       }
@@ -221,13 +290,13 @@ async function finalizeAttempt(input: {
   }
 
   if (!captureHealthy || !artifactPath) {
-    await reportSafely(input.reportDelivery, { status: 'capture_failed' });
-    return;
+    return { status: 'capture_failed' };
   }
 
   let uploader: CloudUploader | undefined;
   let delivery: TaviTriggerDelivery = { status: 'upload_failed' };
   try {
+    if (input.control.expired) return { status: 'timed_out' };
     uploader = createCloudUploader({
       endpoint: input.tenant.endpoint,
       ingestKey: input.tenant.ingestKey,
@@ -236,10 +305,18 @@ async function finalizeAttempt(input: {
       concurrency: 1,
       ...(input.tenant.fetch ? { fetch: input.tenant.fetch } : {}),
     });
+    input.control.uploader = uploader;
     const receipt = await uploader.enqueueArtifact(artifactPath);
+    if (input.control.expired) return { status: 'timed_out' };
+    const remainingMs = input.control.expiresAt - Date.now();
+    if (remainingMs <= 0) return { status: 'timed_out' };
     const flushed = await uploader.flush({
-      deadlineMs: input.tenant.uploadDeadlineMs ?? 10_000,
+      deadlineMs: Math.min(
+        positiveDeadline(input.tenant.uploadDeadlineMs, 10_000),
+        remainingMs,
+      ),
     });
+    if (input.control.expired) return { status: 'timed_out' };
     const acknowledged = receipt.state === 'acked' || (
       flushed.ackedBundles === 1
       && flushed.pendingBundles === 0
@@ -259,8 +336,59 @@ async function finalizeAttempt(input: {
     if (uploader) {
       try { await uploader.shutdown(); } catch { /* fail open */ }
     }
+    input.control.uploader = undefined;
   }
-  await reportSafely(input.reportDelivery, delivery);
+  return delivery;
+}
+
+async function validOrchestratorArtifact(
+  artifactPath: string,
+  trigger: TaviTriggerIdentity,
+): Promise<boolean> {
+  try {
+    const [manifestText, traceText] = await Promise.all([
+      readFile(join(artifactPath, 'manifest.json'), 'utf8'),
+      readFile(join(artifactPath, 'trace.jsonl'), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as {
+      sources?: Array<{ id?: unknown; name?: unknown }>;
+    };
+    const rows = traceText.trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, any>);
+    const otelSources = new Set((manifest.sources ?? [])
+      .filter((source) => source.name === 'generic:otel' && typeof source.id === 'string')
+      .map((source) => source.id as string));
+    const root = rows.find((row) => row.kind === 'run.start'
+      && row.data?.correlation?.execution?.system === 'trigger.dev'
+      && row.data.correlation.execution.attempt === trigger.attemptNumber
+      && /^task_[a-f0-9]{64}$/u.test(row.data.correlation.task_id ?? '')
+      && /^exec_[a-f0-9]{64}$/u.test(row.data.correlation.execution.run_id ?? ''));
+    if (!root) return false;
+    const completed = rows.some((row) => row.kind === 'run.outcome'
+      && row.parent === root.id
+      && row.data?.status === 'completed');
+    if (!completed) return false;
+    return rows.some((start) => start.kind === 'scope'
+      && otelSources.has(start.source)
+      && start.parent === root.id
+      && start.data?.type === 'step'
+      && start.data?.phase === 'start'
+      && rows.some((end) => end.kind === 'scope'
+        && otelSources.has(end.source)
+        && end.parent === start.id
+        && end.data?.scope_id === start.data.scope_id
+        && end.data?.phase === 'end'
+        && end.data?.status === 'completed'));
+  } catch {
+    return false;
+  }
+}
+
+function positiveDeadline(value: number | undefined, fallback: number): number {
+  const requested = Number.isFinite(value) && Number(value) > 0
+    ? Math.floor(Number(value))
+    : fallback;
+  return Math.max(1, Math.min(requested, fallback));
 }
 
 function safeRequestId(value: string | null): string | undefined {

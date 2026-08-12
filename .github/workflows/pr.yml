@@ -120,9 +120,9 @@ jobs:
       - name: Test the Trigger 4.4.4 attempt integration on its production runtime
         if: matrix.node-version == '22.16.0'
         run: |
-          pnpm install --dir examples/tavi-trigger-attempt --ignore-workspace --frozen-lockfile
-          pnpm --dir examples/tavi-trigger-attempt run test
-          pnpm --dir examples/tavi-trigger-attempt run typecheck
+          npm ci --prefix examples/tavi-trigger-attempt
+          npm test --prefix examples/tavi-trigger-attempt
+          npm run typecheck --prefix examples/tavi-trigger-attempt
 
   python-compatibility:
     strategy:

@@ -47,6 +47,7 @@ export type PluginApi = {
   logger: Logger;
   on: OpenClawPluginApi['on'];
   registerTool?: OpenClawPluginApi['registerTool'];
+  registerGatewayMethod?: OpenClawPluginApi['registerGatewayMethod'];
   runtime?: { version?: string };
   registrationMode?: string;
 };
@@ -54,7 +55,7 @@ export type PluginApi = {
 export type PluginDefinition = OpenClawPluginDefinition & {
   id: 'semantic-layer-openclaw';
   name: 'Semantic Layer';
-  version: '0.1.0-pilot.4';
+  version: '0.1.0-pilot.5';
   register(api: PluginApi): void;
 };
 
@@ -102,6 +103,8 @@ const SNAPSHOT_MAX_NODES = 8_192;
 const SNAPSHOT_MAX_WIDTH = 512;
 const SNAPSHOT_MAX_STRING_BYTES = 256_000;
 const SNAPSHOT_MAX_BYTES = 512 * 1024;
+const MAX_PENDING_CORRELATIONS = 1_024;
+const CORRELATION_BINDING_TTL_MS = 5 * 60 * 1_000;
 const PRIVATE_SNAPSHOT_KEYS = new Set([
   'thinking',
   'reasoning',
@@ -132,9 +135,10 @@ export function createPluginDefinition(
     name: 'Semantic Layer',
     description:
       'Capture OpenClaw runs as semantic traces and enqueue sealed bundles for upload.',
-    version: '0.1.0-pilot.4',
+    version: '0.1.0-pilot.5',
     register(api) {
       const runtime = new CaptureRuntime(api, dependencies, options);
+      runtime.registerCorrelationGatewayMethod();
       runtime.registerHooks();
     },
   };
@@ -142,6 +146,11 @@ export function createPluginDefinition(
 
 class CaptureRuntime {
   private readonly runs = new Map<string, Run>();
+  private readonly pendingCorrelations = new Map<
+    string,
+    { taskId: string; expiresAt: number }
+  >();
+  private readonly consumedCorrelations = new Map<string, number>();
   private readonly sessionOwners = new Map<string, Set<string>>();
   private readonly unavailableHooks = new Set<string>();
   private readonly diagnosticKeys = new Set<string>();
@@ -189,6 +198,50 @@ class CaptureRuntime {
         `Semantic Layer capture is active on in-range but unqualified OpenClaw ${hostVersion}; the exact qualified build is ${[...QUALIFIED_HOST_VERSIONS].join(', ')}. Run the setup doctor for the overall capability check.`,
       );
     }
+  }
+
+  registerCorrelationGatewayMethod(): void {
+    if (!this.api.registerGatewayMethod) return;
+    this.api.registerGatewayMethod(
+      'semantic-layer.correlation.bind',
+      ({ params, respond }) => {
+        if (!this.config) {
+          respond(true, { accepted: false, reason: 'capture_disabled' });
+          return;
+        }
+        this.pruneExpiredCorrelations();
+        if (!validCorrelationBindingParams(params)) {
+          respond(true, { accepted: false, reason: 'invalid_request' });
+          return;
+        }
+        const { runId, taskId } = params;
+        if (this.consumedCorrelations.has(runId)) {
+          respond(true, { accepted: false, reason: 'run_consumed' });
+          return;
+        }
+        if (this.runs.has(runId)) {
+          respond(true, { accepted: false, reason: 'run_active' });
+          return;
+        }
+        const existing = this.pendingCorrelations.get(runId);
+        if (existing) {
+          respond(true, existing.taskId === taskId
+            ? { accepted: true }
+            : { accepted: false, reason: 'conflict' });
+          return;
+        }
+        if (this.pendingCorrelations.size >= MAX_PENDING_CORRELATIONS) {
+          respond(true, { accepted: false, reason: 'capacity_reached' });
+          return;
+        }
+        this.pendingCorrelations.set(runId, {
+          taskId,
+          expiresAt: Date.now() + CORRELATION_BINDING_TTL_MS,
+        });
+        respond(true, { accepted: true });
+      },
+      { scope: 'operator.admin' },
+    );
   }
 
   registerHooks(): void {
@@ -1370,6 +1423,7 @@ class CaptureRuntime {
       const capture = this.dependencies.createRunCapture({
         serviceName: this.config.serviceName,
         installationId: this.config.installationId,
+        identityKey: this.config.identityKey,
         ...(this.config.outputDirectory
           ? { output: this.config.outputDirectory }
           : {}),
@@ -1382,6 +1436,7 @@ class CaptureRuntime {
         shutdownDeadlineMs: this.shutdownDeadlineMs,
         queueCapacityBytes: 64 * 1024 * 1024,
       });
+      const correlationTaskId = this.consumeCorrelation(runId);
       const source = createRunSource({
         runId,
         conversationId,
@@ -1390,6 +1445,14 @@ class CaptureRuntime {
           this.api.runtime?.version,
           this.unavailableHooks,
         ),
+        ...(correlationTaskId
+          ? {
+              correlation: {
+                taskId: correlationTaskId,
+                execution: { system: 'openclaw', runId, rootRunId: runId },
+              },
+            }
+          : {}),
         input: this.snapshot(undefined, input),
         unavailableHooks: [...this.unavailableHooks],
       });
@@ -1430,6 +1493,32 @@ class CaptureRuntime {
     } catch (error) {
       this.logError(`failed to initialize capture for run ${runId}`, error);
       return undefined;
+    }
+  }
+
+  private consumeCorrelation(runId: string): string | undefined {
+    this.pruneExpiredCorrelations();
+    const binding = this.pendingCorrelations.get(runId);
+    if (!binding) return undefined;
+    this.pendingCorrelations.delete(runId);
+    if (this.consumedCorrelations.size >= MAX_PENDING_CORRELATIONS) {
+      const oldest = this.consumedCorrelations.keys().next().value;
+      if (typeof oldest === 'string') this.consumedCorrelations.delete(oldest);
+    }
+    this.consumedCorrelations.set(
+      runId,
+      Date.now() + CORRELATION_BINDING_TTL_MS,
+    );
+    return binding.taskId;
+  }
+
+  private pruneExpiredCorrelations(): void {
+    const now = Date.now();
+    for (const [runId, binding] of this.pendingCorrelations) {
+      if (binding.expiresAt <= now) this.pendingCorrelations.delete(runId);
+    }
+    for (const [runId, expiresAt] of this.consumedCorrelations) {
+      if (expiresAt <= now) this.consumedCorrelations.delete(runId);
     }
   }
 
@@ -1591,6 +1680,23 @@ class CaptureRuntime {
   private logError(message: string, error: unknown): void {
     this.api.logger.error(`${message}: ${errorMessage(error)}`);
   }
+}
+
+function validCorrelationBindingParams(
+  value: unknown,
+): value is { runId: string; taskId: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (Object.keys(value).sort().join(',') !== 'runId,taskId') return false;
+  const input = value as Record<string, unknown>;
+  return validCorrelationText(input.runId) && validCorrelationText(input.taskId);
+}
+
+function validCorrelationText(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.trim() === value
+    && [...value].length <= 512
+    && !value.includes('\0');
 }
 
 export function pseudonymizeSession(

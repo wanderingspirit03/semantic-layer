@@ -3,6 +3,7 @@ import type {
   CaptureSource,
   SourceSink,
   TraceIdentity,
+  RunCorrelationInput,
 } from 'semantic-layer-capture';
 
 const SETTLED = Promise.resolve();
@@ -16,6 +17,7 @@ export type RunSourceOptions = {
     profile: string;
   };
   input?: unknown;
+  correlation?: RunCorrelationInput;
   unavailableHooks?: readonly string[];
 };
 
@@ -92,6 +94,7 @@ export function createRunSource(options: RunSourceOptions): RunSource {
         nativeIdentity: options.runId,
         conversationId: options.conversationId,
         turnId: options.runId,
+        ...(options.correlation ? { correlation: options.correlation } : {}),
         native: { runId: options.runId },
         semantic: {
           type: 'agent.run',

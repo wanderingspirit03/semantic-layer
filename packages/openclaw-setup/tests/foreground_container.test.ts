@@ -12,7 +12,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { REQUIRED_PLUGIN_HOOKS } from '../src/bin.js';
+import {
+  REQUIRED_PLUGIN_GATEWAY_METHODS,
+  REQUIRED_PLUGIN_HOOKS,
+} from '../src/bin.js';
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const temporaryDirectories: string[] = [];
@@ -149,16 +152,17 @@ function openClawFixture(pluginInstallPath: string): string {
       enabled: true,
       status: 'loaded',
       packageName: 'semantic-layer-openclaw',
-      version: '0.1.0-pilot.4',
+      version: '0.1.0-pilot.5',
     },
     install: {
       resolvedName: 'semantic-layer-openclaw',
-      resolvedVersion: '0.1.0-pilot.4',
+      resolvedVersion: '0.1.0-pilot.5',
       installPath: pluginInstallPath,
       source: 'npm',
-      spec: 'semantic-layer-openclaw@0.1.0-pilot.4',
+      spec: 'semantic-layer-openclaw@0.1.0-pilot.5',
     },
     typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })),
+    gatewayMethods: [...REQUIRED_PLUGIN_GATEWAY_METHODS],
     diagnostics: [],
   };
   return [

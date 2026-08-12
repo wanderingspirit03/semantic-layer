@@ -9,8 +9,107 @@ type Handler = (
   event: Record<string, unknown>,
   context: Record<string, unknown>,
 ) => unknown;
+type GatewayHandler = (input: {
+  params: Record<string, unknown>;
+  respond(ok: boolean, payload?: unknown): void;
+}) => unknown;
 
 describe('persisted OpenClaw capture', () => {
+  it('protects trusted run-start correlation without retaining the raw ID', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-correlation-'));
+    const handlers: Partial<Record<string, Handler>> = {};
+    const identityKey = 'identity-secret-value-which-is-long-enough';
+    const taskId = 'private-research-task-id';
+    let artifactPath = '';
+    let bindCorrelation: GatewayHandler | undefined;
+    try {
+      const plugin = createPluginDefinition(
+        {
+          createRunCapture: createCapture,
+          createUploader: () => ({
+            async enqueueArtifact(path: string) {
+              artifactPath = path;
+              return { bundleId: 'bundle', bundleDigest: 'digest', state: 'pending' as const };
+            },
+            async flush() { return { timedOut: false, uploadedBundles: 0 }; },
+            status() { return { lifecycle: 'running', pressure: 'ok' }; },
+            async shutdown() {},
+          }),
+        },
+        { terminalGraceMs: 0 },
+      );
+      plugin.register({
+        pluginConfig: {
+          endpoint: 'https://ingest.example.test',
+          ingestKey: 'ingest-secret-value',
+          identityKey,
+          installationId: 'install_0123456789abcdef0123456789abcdef',
+          serviceName: 'openclaw-correlation',
+          outputDirectory: output,
+        },
+        on(name, handler) { handlers[name] = handler as Handler; },
+        registerGatewayMethod(_name, handler) {
+          bindCorrelation = handler as unknown as GatewayHandler;
+        },
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        runtime: { version: '2026.5.5' },
+      });
+      const context = {
+        runId: 'openclaw-run-correlated',
+        sessionId: 'openclaw-session-correlated',
+      };
+      let bindResult: unknown;
+      bindCorrelation?.({
+        params: { runId: context.runId, taskId },
+        respond(_ok, payload) { bindResult = payload; },
+      });
+      expect(bindResult).toEqual({ accepted: true });
+      handlers.before_model_resolve!({ prompt: 'hello' }, context);
+      await handlers.agent_end!({ runId: context.runId, success: true }, context);
+
+      const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
+      const start = trace.trim().split('\n').map((line) => JSON.parse(line))
+        .find((row) => row.kind === 'run.start');
+      expect(start.data.correlation).toMatchObject({
+        task_id: expect.stringMatching(/^task_[a-f0-9]{64}$/u),
+        execution: {
+          system: 'openclaw',
+          run_id: expect.stringMatching(/^exec_[a-f0-9]{64}$/u),
+        },
+      });
+      expect(trace).not.toContain(taskId);
+      expect(trace).not.toContain(identityKey);
+      const triggerCapture = createCapture({
+        output,
+        serviceName: 'trigger-correlation',
+        identityKey,
+      });
+      await triggerCapture.observe('trigger-attempt', {
+        correlation: {
+          taskId,
+          execution: {
+            system: 'trigger.dev',
+            runId: 'trigger-run-correlated',
+          },
+        },
+      }, async () => 'complete');
+      const triggerClosed = await triggerCapture.shutdown();
+      const triggerTrace = await readFile(
+        join(triggerClosed.artifactPath, 'trace.jsonl'),
+        'utf8',
+      );
+      const triggerStart = triggerTrace.trim().split('\n')
+        .map((line) => JSON.parse(line))
+        .find((row) => row.kind === 'run.start');
+      expect(start.data.correlation.task_id)
+        .toBe(triggerStart.data.correlation.task_id);
+      await expect(validateArtifact(artifactPath, { secretValues: [taskId, identityKey] }))
+        .resolves.toMatchObject({ valid: true, issues: [] });
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
   it('uploads a sealed trace when one hook payload is safely omitted', async () => {
     const output = await mkdtemp(
       join(tmpdir(), 'semantic-layer-openclaw-safe-omission-'),

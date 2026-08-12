@@ -31,6 +31,7 @@ import {
   standaloneSpoolUploaderOptions,
   packageInstallSpec,
   pluginRuntimeFailures,
+  REQUIRED_PLUGIN_GATEWAY_METHODS,
   REQUIRED_PLUGIN_HOOKS,
   runOpenClaw,
   securityAuditFailures,
@@ -50,12 +51,12 @@ afterEach(async () => {
 describe('client setup command contract', () => {
   it('uses the exact native npm package spec and one explicit restart', () => {
     const commands = setupCommandPlan(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.5',
     );
     expect(commands[0]).toEqual([
       'plugins',
       'install',
-      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.5',
       '--pin',
     ]);
     expect(commands.some((args) => args.includes('patch'))).toBe(false);
@@ -77,7 +78,7 @@ describe('client setup command contract', () => {
 
   it('never changes or restarts the Gateway in container mode', () => {
     const commands = setupCommandPlan(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.5',
       'container',
     );
     expect(commands).not.toContainEqual(['security', 'audit', '--json']);
@@ -93,7 +94,7 @@ describe('client setup command contract', () => {
       commandTimeoutMs([
         'plugins',
         'install',
-        'npm:semantic-layer-openclaw@0.1.0-pilot.4',
+        'npm:semantic-layer-openclaw@0.1.0-pilot.5',
       ]),
     ).toBe(300_000);
     expect(commandTimeoutMs(['gateway', 'restart'])).toBe(120_000);
@@ -310,11 +311,11 @@ describe('client setup command contract', () => {
 
   it('accepts only the exact public pilot or an absolute test tarball override', () => {
     expect(packageInstallSpec(undefined)).toBe(
-      'npm:semantic-layer-openclaw@0.1.0-pilot.4',
+      'npm:semantic-layer-openclaw@0.1.0-pilot.5',
     );
     expect(
-      packageInstallSpec('npm:semantic-layer-openclaw@0.1.0-pilot.4'),
-    ).toBe('npm:semantic-layer-openclaw@0.1.0-pilot.4');
+      packageInstallSpec('npm:semantic-layer-openclaw@0.1.0-pilot.5'),
+    ).toBe('npm:semantic-layer-openclaw@0.1.0-pilot.5');
     expect(packageInstallSpec('npm-pack:/tmp/plugin.tgz')).toBe(
       '/tmp/plugin.tgz',
     );
@@ -333,6 +334,7 @@ describe('client setup command contract', () => {
         status: 'loaded',
       },
       typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })),
+      gatewayMethods: [...REQUIRED_PLUGIN_GATEWAY_METHODS],
       diagnostics: [{ level: 'warn', message: 'non-fatal qualification note' }],
     });
     expect(pluginRuntimeFailures(healthyReport)).toEqual([]);
@@ -344,6 +346,7 @@ describe('client setup command contract', () => {
         status: 'disabled',
       },
       typedHooks: REQUIRED_PLUGIN_HOOKS.slice(1).map((name) => ({ name })),
+      gatewayMethods: [],
       diagnostics: [{ level: 'error', message: 'load failed' }],
     });
     expect(pluginRuntimeFailures(disabledReport)).toEqual(
@@ -351,6 +354,7 @@ describe('client setup command contract', () => {
         expect.stringContaining('enabled'),
         expect.stringContaining('loaded'),
         expect.stringContaining(REQUIRED_PLUGIN_HOOKS[0]),
+        expect.stringContaining(REQUIRED_PLUGIN_GATEWAY_METHODS[0]),
         expect.stringContaining('load failed'),
       ]),
     );
@@ -365,6 +369,7 @@ describe('client setup command contract', () => {
         JSON.stringify({
           plugin: { enabled: true, status: 'loaded' },
           typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })),
+          gatewayMethods: [...REQUIRED_PLUGIN_GATEWAY_METHODS],
         }),
       ),
     ).toEqual([expect.stringContaining('diagnostics')]);
@@ -780,7 +785,7 @@ describe('client setup command contract', () => {
         'const args = process.argv.slice(2);',
         'const merge = (left, right) => { for (const [key, value] of Object.entries(right)) { if (value === null) delete left[key]; else left[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(left[key] && typeof left[key] === "object" && !Array.isArray(left[key]) ? left[key] : {}, value) : value; } return left; };',
         'const get = (root, path) => path.split(".").reduce((value, key) => value && typeof value === "object" ? value[key] : undefined, root);',
-        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.4' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.4', installPath: pluginInstallPath, source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.4' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), diagnostics: [] })};`,
+        `const report = ${JSON.stringify({ plugin: { id: 'semantic-layer-openclaw', enabled: true, status: 'loaded', packageName: 'semantic-layer-openclaw', version: '0.1.0-pilot.5' }, install: { resolvedName: 'semantic-layer-openclaw', resolvedVersion: '0.1.0-pilot.5', installPath: pluginInstallPath, source: 'npm', spec: 'semantic-layer-openclaw@0.1.0-pilot.5' }, typedHooks: REQUIRED_PLUGIN_HOOKS.map((name) => ({ name })), gatewayMethods: [...REQUIRED_PLUGIN_GATEWAY_METHODS], diagnostics: [] })};`,
         "if (args[0] === '--version') process.stdout.write('OpenClaw 2026.5.5\\n');",
         "else if (args[0] === 'plugins' && args[1] === 'inspect') { if (!existsSync(process.env.PLUGIN_MARKER)) { process.stderr.write('Plugin not found: semantic-layer-openclaw\\n'); process.exitCode = 1; } else process.stdout.write(JSON.stringify(report)); }",
         "else if (args[0] === 'plugins' && args[1] === 'install') { const credentialsPath = process.env.OPENCLAW_STATE_DIR + '/semantic-layer/credentials.json'; const statePath = process.env.OPENCLAW_STATE_DIR + '/semantic-layer/installation.json'; if (!existsSync(credentialsPath) || !existsSync(statePath)) { process.stderr.write('managed recovery state was not durable before plugin install\\n'); process.exitCode = 25; } else { mkdirSync(report.install.installPath, { recursive: true }); writeFileSync(process.env.PLUGIN_MARKER, 'installed'); const current = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8')); current.plugins ??= {}; current.plugins.entries ??= {}; current.plugins.installs ??= {}; current.plugins.entries['semantic-layer-openclaw'] = { enabled: true }; current.plugins.installs['semantic-layer-openclaw'] = { source: 'npm', spec: report.install.spec, installPath: report.install.installPath, version: report.install.resolvedVersion }; if (process.env.INJECT_INSTALLER_CONFIG_CHANGE === '1') current.channels.slack.injected = true; writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(current)); if (process.env.OPENCLAW_CONFIG_PATH === process.env.ACTIVE_CONFIG_PATH) writeFileSync(process.env.LIVE_INSTALL_MARKER, 'unsafe'); const count = existsSync(process.env.INSTALL_COUNT_PATH) ? Number(readFileSync(process.env.INSTALL_COUNT_PATH, 'utf8')) : 0; writeFileSync(process.env.INSTALL_COUNT_PATH, String(count + 1)); } }",
@@ -989,7 +994,7 @@ describe('client setup command contract', () => {
         endpoint,
         installationId,
         pluginPackage: 'semantic-layer-openclaw',
-        pluginVersion: '0.1.0-pilot.4',
+        pluginVersion: '0.1.0-pilot.5',
         preservedEnabledPluginIds: ['latitude'],
         serviceName: 'customer-openclaw-vm-01',
         setupMode: 'container',
