@@ -8,6 +8,7 @@ import { createPluginDefinition, type PluginApi } from '../src/plugin.js';
 export async function verifyQualifiedCorrelationBundle(
   hostVersion: string,
   register: (plugin: ReturnType<typeof createPluginDefinition>, api: PluginApi) => void,
+  correlation: 'bound' | 'native' = 'bound',
 ): Promise<void> {
   const output = await mkdtemp(join(tmpdir(), 'semantic-layer-qualified-correlation-'));
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -48,21 +49,26 @@ export async function verifyQualifiedCorrelationBundle(
       runtime: { version: hostVersion },
     };
     register(plugin, api);
-    let bindResult: unknown;
-    gatewayHandler?.({
-      params: { runId: 'qualified-run', taskId: 'qualified-task' },
-      respond(_ok, payload) { bindResult = payload; },
-    });
-    expect(bindResult).toEqual({ accepted: true });
+    if (correlation === 'bound') {
+      let bindResult: unknown;
+      gatewayHandler?.({
+        params: { runId: 'qualified-run', taskId: 'qualified-task' },
+        respond(_ok, payload) { bindResult = payload; },
+      });
+      expect(bindResult).toEqual({ accepted: true });
+    }
     const context = { runId: 'qualified-run', sessionId: 'qualified-session' };
     handlers.get('before_model_resolve')?.({ prompt: 'hello' }, context);
     await handlers.get('agent_end')?.({ runId: context.runId, success: true }, context);
 
     const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
     expect(trace).toMatch(/"task_id":"task_[a-f0-9]{64}"/u);
-    expect(trace).not.toContain('qualified-task');
+    if (correlation === 'bound') expect(trace).not.toContain('qualified-task');
     await expect(validateArtifact(artifactPath, {
-      secretValues: ['qualified-task', 'qualified-identity-secret-which-is-long-enough'],
+      secretValues: [
+        ...(correlation === 'bound' ? ['qualified-task'] : []),
+        'qualified-identity-secret-which-is-long-enough',
+      ],
     })).resolves.toMatchObject({ valid: true, issues: [] });
   } finally {
     await rm(output, { recursive: true, force: true });

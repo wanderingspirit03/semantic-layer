@@ -11,6 +11,6 @@ export default defineConfig({
     },
   },
   test: {
-    include: [resolve(here, 'tavi-trigger-attempt.test.ts')],
+    include: [resolve(here, '*.test.ts')],
   },
 });

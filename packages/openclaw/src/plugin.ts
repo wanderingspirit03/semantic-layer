@@ -55,7 +55,7 @@ export type PluginApi = {
 export type PluginDefinition = OpenClawPluginDefinition & {
   id: 'semantic-layer-openclaw';
   name: 'Semantic Layer';
-  version: '0.1.0-pilot.5';
+  version: '0.1.0-pilot.6';
   register(api: PluginApi): void;
 };
 
@@ -135,7 +135,7 @@ export function createPluginDefinition(
     name: 'Semantic Layer',
     description:
       'Capture OpenClaw runs as semantic traces and enqueue sealed bundles for upload.',
-    version: '0.1.0-pilot.5',
+    version: '0.1.0-pilot.6',
     register(api) {
       const runtime = new CaptureRuntime(api, dependencies, options);
       runtime.registerCorrelationGatewayMethod();
@@ -1436,7 +1436,8 @@ class CaptureRuntime {
         shutdownDeadlineMs: this.shutdownDeadlineMs,
         queueCapacityBytes: 64 * 1024 * 1024,
       });
-      const correlationTaskId = this.pendingCorrelation(runId);
+      const boundTaskId = this.pendingCorrelation(runId);
+      const correlationTaskId = boundTaskId ?? runId;
       const source = createRunSource({
         runId,
         conversationId,
@@ -1445,14 +1446,10 @@ class CaptureRuntime {
           this.api.runtime?.version,
           this.unavailableHooks,
         ),
-        ...(correlationTaskId
-          ? {
-              correlation: {
-                taskId: correlationTaskId,
-                execution: { system: 'openclaw', runId, rootRunId: runId },
-              },
-            }
-          : {}),
+        correlation: {
+          taskId: correlationTaskId,
+          execution: { system: 'openclaw', runId, rootRunId: runId },
+        },
         input: this.snapshot(undefined, input),
         unavailableHooks: [...this.unavailableHooks],
       });
@@ -1467,8 +1464,8 @@ class CaptureRuntime {
           });
         throw new Error('OpenClaw run root was not admitted by capture.');
       }
-      if (correlationTaskId) {
-        this.markCorrelationConsumed(runId, correlationTaskId);
+      if (boundTaskId) {
+        this.markCorrelationConsumed(runId, boundTaskId);
       }
       const run: Run = {
         runId,

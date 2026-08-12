@@ -15,6 +15,98 @@ type GatewayHandler = (input: {
 }) => unknown;
 
 describe('persisted OpenClaw capture', () => {
+  it('protects native inbound run correlation without a Gateway binding', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-inbound-'));
+    const handlers: Partial<Record<string, Handler>> = {};
+    const identityKey = 'identity-secret-value-which-is-long-enough';
+    const runId = 'private-native-inbound-run-id';
+    let artifactPath = '';
+    try {
+      const plugin = createPluginDefinition(
+        {
+          createRunCapture: createCapture,
+          createUploader: () => ({
+            async enqueueArtifact(path: string) {
+              artifactPath = path;
+              return { bundleId: 'bundle', bundleDigest: 'digest', state: 'pending' as const };
+            },
+            async flush() { return { timedOut: false, uploadedBundles: 0 }; },
+            status() { return { lifecycle: 'running', pressure: 'ok' }; },
+            async shutdown() {},
+          }),
+        },
+        { terminalGraceMs: 0 },
+      );
+      plugin.register({
+        pluginConfig: {
+          endpoint: 'https://ingest.example.test',
+          ingestKey: 'ingest-secret-value',
+          identityKey,
+          installationId: 'install_0123456789abcdef0123456789abcdef',
+          serviceName: 'openclaw-native-inbound-correlation',
+          outputDirectory: output,
+        },
+        on(name, handler) { handlers[name] = handler as Handler; },
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        runtime: { version: '2026.5.5' },
+      });
+      const context = { runId, sessionId: 'private-native-inbound-session' };
+      handlers.message_received!({
+        from: 'trusted-inbound-sender',
+        content: 'synthetic inbound message',
+        sessionKey: 'agent:main:slack:dm:synthetic',
+      }, {
+        channelId: 'slack',
+        sessionKey: 'agent:main:slack:dm:synthetic',
+      });
+      handlers.before_model_resolve!({ prompt: 'synthetic inbound message' }, context);
+      await handlers.agent_end!({ runId, success: true }, context);
+
+      const trace = await readFile(join(artifactPath, 'trace.jsonl'), 'utf8');
+      const start = trace.trim().split('\n').map((line) => JSON.parse(line))
+        .find((row) => row.kind === 'run.start');
+      expect(start.data.correlation).toMatchObject({
+        task_id: expect.stringMatching(/^task_[a-f0-9]{64}$/u),
+        execution: {
+          system: 'openclaw',
+          run_id: expect.stringMatching(/^exec_[a-f0-9]{64}$/u),
+          root_run_id: expect.stringMatching(/^exec_[a-f0-9]{64}$/u),
+        },
+      });
+      expect(start.data.correlation.task_id).not.toContain(runId);
+      expect(start.data.correlation.execution.run_id).not.toContain(runId);
+      expect(start.data.turn_id).toContain(runId);
+      const workerCapture = createCapture({
+        output,
+        serviceName: 'inbound-worker-correlation',
+        identityKey,
+      });
+      await workerCapture.observe('worker-attempt', {
+        correlation: {
+          taskId: runId,
+          execution: {
+            system: 'job-runner',
+            runId: 'worker-run-for-native-inbound',
+          },
+        },
+      }, async () => 'complete');
+      const workerClosed = await workerCapture.shutdown();
+      const workerTrace = await readFile(
+        join(workerClosed.artifactPath, 'trace.jsonl'),
+        'utf8',
+      );
+      const workerStart = workerTrace.trim().split('\n')
+        .map((line) => JSON.parse(line))
+        .find((row) => row.kind === 'run.start');
+      expect(start.data.correlation.task_id)
+        .toBe(workerStart.data.correlation.task_id);
+      await expect(validateArtifact(artifactPath, { secretValues: [identityKey] }))
+        .resolves.toMatchObject({ valid: true, issues: [] });
+    } finally {
+      await rm(output, { recursive: true, force: true });
+    }
+  });
+
   it('protects trusted run-start correlation without retaining the raw ID', async () => {
     const output = await mkdtemp(join(tmpdir(), 'semantic-layer-openclaw-correlation-'));
     const handlers: Partial<Record<string, Handler>> = {};

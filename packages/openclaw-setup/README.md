@@ -12,7 +12,7 @@ container and service flows.
 Install the pinned pilot release:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 setup \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.11 setup \
   --container \
   --endpoint "<SEMANTIC_LAYER_ENDPOINT>" \
   --service-name "<SERVICE_NAME>" \
@@ -27,7 +27,7 @@ Then check the live installation. Pass the local Gateway URL when its runtime
 port is not saved in the OpenClaw config:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 doctor \
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.11 doctor \
   --container \
   --gateway-url "ws://127.0.0.1:3001"
 ```
@@ -35,7 +35,7 @@ npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 doctor \
 Remove only the Semantic Layer installation:
 
 ```sh
-npx -y semantic-layer-openclaw-setup@0.1.0-pilot.10 uninstall --container --acknowledge-external-restart
+npx -y semantic-layer-openclaw-setup@0.1.0-pilot.11 uninstall --container --acknowledge-external-restart
 ```
 
 Setup and key rotation ask for the ingestion key in a hidden prompt. They do

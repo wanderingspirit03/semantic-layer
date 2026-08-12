@@ -26,7 +26,7 @@ import { checkCompatibility, type CompatibilityResult } from './preflight.js';
 
 const PLUGIN_ID = 'semantic-layer-openclaw';
 const PLUGIN_PACKAGE = 'semantic-layer-openclaw';
-const PLUGIN_VERSION = '0.1.0-pilot.5';
+const PLUGIN_VERSION = '0.1.0-pilot.6';
 const PACKAGE_SPEC = `npm:${PLUGIN_PACKAGE}@${PLUGIN_VERSION}`;
 const DEFAULT_OPENCLAW_SPOOL_BYTES = 1024 * 1024 * 1024;
 const SECRET_ENVIRONMENT_KEYS = [

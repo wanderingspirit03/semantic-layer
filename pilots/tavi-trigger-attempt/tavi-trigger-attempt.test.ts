@@ -18,7 +18,6 @@ import {
   type TaviTriggerDelivery,
   type TrustedTaviTenantConfig,
 } from './tavi-trigger-attempt.js';
-import { createTaviOpenTelemetryAttemptRouter } from './otel-attempt-router.js';
 import { createTaviTriggerCancellationRegistry } from './trigger-cancellation.js';
 import { triggerIdentityFromContext } from './trigger-context.js';
 
@@ -62,7 +61,7 @@ describe('runTaviTriggerAttempt', () => {
       tenant: tenant(),
       trigger: triggerIdentity(),
       temporaryRoot: root,
-      openTelemetry: { source, router: createTaviOpenTelemetryAttemptRouter() },
+      openTelemetry: { source },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
         emitRichOpenTelemetry(source, '3', 'acknowledged-research');
@@ -166,7 +165,6 @@ describe('runTaviTriggerAttempt', () => {
 
   it('isolates two enrolled tenants with different trusted configuration', async () => {
     const root = await privateRoot();
-    const router = createTaviOpenTelemetryAttemptRouter();
     const firstAuth: string[] = [];
     const secondAuth: string[] = [];
     const first = tenant(successfulFetch(undefined, (auth) => { firstAuth.push(auth); }), {
@@ -189,10 +187,7 @@ describe('runTaviTriggerAttempt', () => {
         tenant: first,
         trigger: triggerIdentity({ runId: 'first-run' }),
         temporaryRoot: root,
-        openTelemetry: {
-          source: firstSource,
-          router,
-        },
+        openTelemetry: { source: firstSource },
         task: async () => {
           emitRichOpenTelemetry(firstSource, '4', 'first-research');
           return 'first';
@@ -202,10 +197,7 @@ describe('runTaviTriggerAttempt', () => {
         tenant: second,
         trigger: triggerIdentity({ runId: 'second-run' }),
         temporaryRoot: root,
-        openTelemetry: {
-          source: secondSource,
-          router,
-        },
+        openTelemetry: { source: secondSource },
         task: async () => {
           emitRichOpenTelemetry(secondSource, '5', 'second-research');
           return 'second';
@@ -291,31 +283,36 @@ describe('runTaviTriggerAttempt', () => {
     expect(deliveries).toHaveLength(2);
   });
 
-  it('routes concurrent enrolled attempts on one OTel 1.25 provider without mixing spans', async () => {
+  it('isolates concurrent attempt-local OTel 1.25 providers and leaves unenrolled tenants Arcus-free', async () => {
     const root = await privateRoot();
     const latitudeBaseline = await latitudeEvidenceWithoutArcus([
       'tenant-a',
       'tenant-b',
       'not-enrolled',
     ]);
-    const latitude = new InMemorySpanExporter();
-    const provider = new BasicTracerProvider();
-    const router = createTaviOpenTelemetryAttemptRouter();
-    provider.addSpanProcessor(new SimpleSpanProcessor(latitude));
-    provider.addSpanProcessor(router.spanProcessor);
-    const tracer = provider.getTracer('tavi-test', '1.0.0', {
-      schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
-    });
+    const latitudeExporters: InMemorySpanExporter[] = [];
+    const providers: BasicTracerProvider[] = [];
     let release!: () => void;
     const ready: string[] = [];
     const barrier = new Promise<void>((resolve) => { release = resolve; });
     const run = (marker: string, config: TrustedTaviTenantConfig | null) => {
-      const source = createOpenTelemetrySource({ version: '1.25.1' });
+      const latitude = new InMemorySpanExporter();
+      const provider = new BasicTracerProvider();
+      provider.addSpanProcessor(new SimpleSpanProcessor(latitude));
+      const source = config === null
+        ? undefined
+        : createOpenTelemetrySource({ version: '1.25.1' });
+      if (source) provider.addSpanProcessor(source.spanProcessor);
+      const tracer = provider.getTracer('tavi-test', '1.0.0', {
+        schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+      });
+      latitudeExporters.push(latitude);
+      providers.push(provider);
       return runTaviTriggerAttempt({
         tenant: config,
         trigger: triggerIdentity({ runId: `run-${marker}` }),
         temporaryRoot: root,
-        openTelemetry: { source, router },
+        ...(source ? { openTelemetry: { source } } : {}),
         task: async () => {
           ready.push(marker);
           if (ready.length === 3) release();
@@ -352,7 +349,9 @@ describe('runTaviTriggerAttempt', () => {
     expect(traces.every((value) => !(
       value.includes('tenant-a-tool') && value.includes('tenant-b-tool')
     ))).toBe(true);
-    expect(latitude.getFinishedSpans().map((span) => span.name).sort()).toEqual([
+    expect(latitudeExporters.flatMap((exporter) => (
+      exporter.getFinishedSpans().map((span) => span.name)
+    )).sort()).toEqual([
       'not-enrolled-agent',
       'not-enrolled-model',
       'not-enrolled-tool',
@@ -363,30 +362,10 @@ describe('runTaviTriggerAttempt', () => {
       'tenant-b-model',
       'tenant-b-tool',
     ]);
-    expect(latitudeEvidence(latitude)).toEqual(latitudeBaseline);
-    await provider.shutdown();
-  });
-
-  it('ignores a retired attempt context while Latitude still receives its late span', async () => {
-    const latitude = new InMemorySpanExporter();
-    const provider = new BasicTracerProvider();
-    const router = createTaviOpenTelemetryAttemptRouter();
-    const source = inertOpenTelemetrySource();
-    const arcusStarts = vi.spyOn(source.spanProcessor, 'onStart');
-    provider.addSpanProcessor(new SimpleSpanProcessor(latitude));
-    provider.addSpanProcessor(router.spanProcessor);
-    const tracer = provider.getTracer('tavi-late-span');
-    const unregister = router.registerSource(source);
-    unregister();
-
-    router.runWithSource(source, () => {
-      tracer.startSpan('late-after-attempt').end();
-    });
-
-    expect(arcusStarts).not.toHaveBeenCalled();
-    expect(latitude.getFinishedSpans().map((span) => span.name))
-      .toEqual(['late-after-attempt']);
-    await provider.shutdown();
+    expect(latitudeExporters.flatMap(latitudeEvidence).sort((left, right) => (
+      left.name.localeCompare(right.name)
+    ))).toEqual(latitudeBaseline);
+    await Promise.all(providers.map(async (provider) => await provider.shutdown()));
   });
 
   it('seals an application timeout without replacing its identity', async () => {
@@ -476,6 +455,61 @@ describe('runTaviTriggerAttempt', () => {
     }));
   });
 
+  it('waits for the attempt-local provider to shut down before cancellation finalization', async () => {
+    const root = await privateRoot();
+    const registry = createTaviTriggerCancellationRegistry();
+    const cancellationHandle = registry.register('trigger-run-provider');
+    const cancellation = new Error('exact provider cancellation');
+    const source = createOpenTelemetrySource({ version: '1.25.1' });
+    const provider = new BasicTracerProvider();
+    let providerStopped = false;
+    provider.addSpanProcessor(source.spanProcessor);
+    provider.addSpanProcessor({
+      onStart() {},
+      onEnd() {},
+      async forceFlush() {},
+      async shutdown() {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        providerStopped = true;
+      },
+    });
+    const tracer = provider.getTracer('tavi-cancellation-provider', '1.0.0', {
+      schemaUrl: 'https://opentelemetry.io/schemas/gen-ai/1.42.0',
+    });
+    const providerStateAtDelivery: boolean[] = [];
+    let started!: () => void;
+    const taskStarted = new Promise<void>((resolve) => { started = resolve; });
+    const running = runTaviTriggerAttempt({
+      tenant: tenant(),
+      trigger: triggerIdentity(),
+      temporaryRoot: root,
+      cancellation: cancellationHandle,
+      successfulAttemptProfile: 'orchestrator',
+      openTelemetry: { source },
+      reportDelivery: () => { providerStateAtDelivery.push(providerStopped); },
+      task: async ({ signal }) => {
+        try {
+          emitOrchestratorThroughTracer(tracer, 'cancelled-provider');
+          return await new Promise<never>((_resolve, reject) => {
+            started();
+            signal?.addEventListener('abort', () => reject(cancellation), {
+              once: true,
+            });
+          });
+        } finally {
+          await provider.shutdown();
+        }
+      },
+    });
+    await taskStarted;
+
+    const hook = registry.cancel('trigger-run-provider');
+    await expect(running).rejects.toBe(cancellation);
+    await hook;
+
+    expect(providerStateAtDelivery).toEqual([true]);
+  });
+
   it('starts bounded finalization when cancellation is signalled before the task settles', async () => {
     const root = await privateRoot();
     const registry = createTaviTriggerCancellationRegistry();
@@ -506,6 +540,36 @@ describe('runTaviTriggerAttempt', () => {
     expect(await readdir(await onlyAttempt(root))).not.toContain('spool');
   });
 
+  it('includes provider settlement in the total cancellation deadline', async () => {
+    const root = await privateRoot();
+    const registry = createTaviTriggerCancellationRegistry();
+    const cancellationHandle = registry.register('trigger-run-total-deadline');
+    let rejectTask!: (reason: unknown) => void;
+    const deliveries: TaviTriggerDelivery[] = [];
+    const startedAt = Date.now();
+    const running = runTaviTriggerAttempt({
+      tenant: {
+        ...tenant(),
+        shutdownDeadlineMs: 1_000,
+        finalizationDeadlineMs: 60,
+      },
+      trigger: triggerIdentity(),
+      temporaryRoot: root,
+      cancellation: cancellationHandle,
+      reportDelivery: (delivery) => { deliveries.push(delivery); },
+      task: async () => await new Promise<never>((_resolve, reject) => {
+        rejectTask = reject;
+      }),
+    });
+
+    const hook = registry.cancel('trigger-run-total-deadline');
+    await hook;
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(deliveries).toEqual([{ status: 'timed_out' }]);
+    rejectTask(new Error('late customer cancellation'));
+    await expect(running).rejects.toThrow('late customer cancellation');
+  });
+
   it('fails open when upload is permanently rejected', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
@@ -516,7 +580,7 @@ describe('runTaviTriggerAttempt', () => {
       tenant: tenant(async () => new Response(null, { status: 422 })),
       trigger: triggerIdentity(),
       temporaryRoot: root,
-      openTelemetry: { source, router: createTaviOpenTelemetryAttemptRouter() },
+      openTelemetry: { source },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
         emitRichOpenTelemetry(source, '6', 'rejected-upload-research');
@@ -556,7 +620,7 @@ describe('runTaviTriggerAttempt', () => {
       tenant: config,
       trigger: triggerIdentity(),
       temporaryRoot: root,
-      openTelemetry: { source, router: createTaviOpenTelemetryAttemptRouter() },
+      openTelemetry: { source },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
         emitRichOpenTelemetry(source, '7', 'timed-out-upload-research');
@@ -741,7 +805,6 @@ describe('runTaviTriggerAttempt', () => {
     const parentRunId = 'ralph-loop-run';
     const parentSource = createOpenTelemetrySource({ version: '1.25.1' });
     const childSource = createOpenTelemetrySource({ version: '1.25.1' });
-    const router = createTaviOpenTelemetryAttemptRouter();
 
     await runTaviTriggerAttempt({
       tenant: config,
@@ -753,7 +816,7 @@ describe('runTaviTriggerAttempt', () => {
       }),
       successfulAttemptProfile: 'orchestrator',
       temporaryRoot: root,
-      openTelemetry: { source: parentSource, router },
+      openTelemetry: { source: parentSource },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
         emitOrchestratorOpenTelemetry(parentSource, '1', 'ralph-loop');
@@ -769,7 +832,7 @@ describe('runTaviTriggerAttempt', () => {
         researchId,
       }),
       temporaryRoot: root,
-      openTelemetry: { source: childSource, router },
+      openTelemetry: { source: childSource },
       reportDelivery: (delivery) => { deliveries.push(delivery); },
       task: async () => {
         emitRichOpenTelemetry(childSource, '2', 'search-loop');
@@ -809,28 +872,6 @@ describe('runTaviTriggerAttempt', () => {
       .toBe(parent.data.correlation.execution.run_id);
     expect(child.data.correlation.execution.root_run_id)
       .toBe(parent.data.correlation.execution.run_id);
-  });
-
-  it('registers an OTel source only for the enabled tenant', async () => {
-    const root = await privateRoot();
-    const registered: OpenTelemetrySource[] = [];
-    const source = inertOpenTelemetrySource();
-    const base = createTaviOpenTelemetryAttemptRouter();
-    const router = {
-      ...base,
-      registerSource(value: OpenTelemetrySource) {
-        registered.push(value);
-        return base.registerSource(value);
-      },
-    };
-    await runTaviTriggerAttempt({
-      tenant: tenant(),
-      trigger: triggerIdentity(),
-      temporaryRoot: root,
-      openTelemetry: { source, router },
-      task: async () => 'done',
-    });
-    expect(registered).toEqual([source]);
   });
 
   it('never logs or emits the key, paths, or captured content', async () => {
@@ -1135,19 +1176,5 @@ function otelSpan(
     droppedAttributesCount: 0,
     droppedEventsCount: 0,
     droppedLinksCount: 0,
-  };
-}
-
-function inertOpenTelemetrySource(): OpenTelemetrySource {
-  return {
-    metadata: {
-      name: 'test:otel',
-      seam: 'test',
-      identityDomain: 'test.otel',
-      coverage: [],
-    },
-    spanProcessor: { onStart() {}, onEnd() {}, async forceFlush() {}, async shutdown() {} },
-    logRecordProcessor: { onEmit() {}, async forceFlush() {}, async shutdown() {} },
-    install() { return { deactivate() {}, drain() {} }; },
   };
 }
