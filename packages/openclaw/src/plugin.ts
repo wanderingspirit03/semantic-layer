@@ -215,12 +215,12 @@ class CaptureRuntime {
           return;
         }
         const { runId, taskId } = params;
-        if (this.consumedCorrelations.has(runId)) {
-          respond(true, { accepted: false, reason: 'run_consumed' });
-          return;
-        }
         if (this.runs.has(runId)) {
           respond(true, { accepted: false, reason: 'run_active' });
+          return;
+        }
+        if (this.consumedCorrelations.has(runId)) {
+          respond(true, { accepted: false, reason: 'run_consumed' });
           return;
         }
         const existing = this.pendingCorrelations.get(runId);

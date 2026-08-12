@@ -64,10 +64,6 @@ describe('OpenClaw run capture', () => {
       context,
     );
     await handlers.agent_end!({ runId: context.runId, success: true }, context);
-    expect(bindCorrelation({
-      runId: context.runId,
-      taskId: 'research-correlated',
-    })).toEqual({ accepted: false, reason: 'run_consumed' });
 
     expect(harness.sourceMetadata).toContainEqual(
       expect.objectContaining({
@@ -193,6 +189,10 @@ describe('OpenClaw run capture', () => {
       taskId: 'research-correlated',
     })).toEqual({ accepted: false, reason: 'run_active' });
     await handlers.agent_end!({ runId: context.runId, success: true }, context);
+    expect(bindCorrelation({
+      runId: context.runId,
+      taskId: 'research-correlated',
+    })).toEqual({ accepted: false, reason: 'run_consumed' });
 
     expect(harness.captureOptions).toContainEqual(expect.objectContaining({
       identityKey: 'identity-secret-value-which-is-long-enough',
