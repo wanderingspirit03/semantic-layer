@@ -30,8 +30,14 @@ The Trigger.dev fixture uses public task context fields and the task-local
 is a new run under the same protected research task. A forced worker stop
 cannot run finalization and is not claimed as captured.
 
-The [Tavi Trigger example](../../examples/tavi-trigger-attempt/README.md#task-integration)
-defines the two supported provider lifetimes and their exact attachment steps.
+Tavi supports two provider lifetimes. When one provider belongs to one attempt,
+add a fresh Arcus processor directly and shut the provider down with the
+attempt. When attempts share one process-wide provider, add one permanent
+attempt router so concurrent tenants cannot mix spans. Both forms use Tavi's
+direct OpenTelemetry `1.25.1` types. They never use processor classes from
+Trigger's nested OpenTelemetry `2.x` packages. The
+[Tavi Trigger example](../../examples/tavi-trigger-attempt/README.md#task-integration)
+shows both attachment forms.
 
 ## Python
 

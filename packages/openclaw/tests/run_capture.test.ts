@@ -241,7 +241,7 @@ describe('OpenClaw run capture', () => {
     }
   });
 
-  it('retains a binding when capture does not admit the run root', () => {
+  it('retains a binding and tears down capture when the run root is rejected', async () => {
     const harness = captureHarness({ rejectOpen: true });
     const { handlers, bindCorrelation } = registerHarness(harness.dependencies);
     expect(bindCorrelation({ runId: 'run-rejected', taskId: 'research-rejected' }))
@@ -251,6 +251,10 @@ describe('OpenClaw run capture', () => {
       { runId: 'run-rejected', prompt: 'start' },
       { runId: 'run-rejected', sessionId: 'session-rejected' },
     );
+    await vi.waitFor(() => {
+      expect(harness.lifecycleDeactivations).toEqual(['/sealed/run-a']);
+      expect(harness.shutdowns).toEqual(['/sealed/run-a']);
+    });
 
     expect(bindCorrelation({ runId: 'run-rejected', taskId: 'research-rejected' }))
       .toEqual({ accepted: true });
@@ -1722,6 +1726,7 @@ function captureHarness(
   const records: Array<Record<string, unknown>> = [];
   const enqueued: string[] = [];
   const shutdowns: string[] = [];
+  const lifecycleDeactivations: string[] = [];
   const uploaderOptions: Array<Record<string, unknown>> = [];
   let captureNumber = 0;
   const dependencies: PluginDependencies = {
@@ -1753,7 +1758,10 @@ function captureHarness(
             },
           };
           source.install(sink);
-          return { deactivate() {}, drain() {} };
+          return {
+            deactivate() { lifecycleDeactivations.push(artifactPath); },
+            drain() {},
+          };
         },
         status: () => status(artifactPath),
         flush: async () => status(artifactPath),
@@ -1799,6 +1807,7 @@ function captureHarness(
     records,
     enqueued,
     shutdowns,
+    lifecycleDeactivations,
     uploaderOptions,
   };
 }

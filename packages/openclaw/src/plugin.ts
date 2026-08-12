@@ -1459,6 +1459,12 @@ class CaptureRuntime {
       const lifecycle = capture.installSource(source.source);
       const started = source.start();
       if (!started.accepted) {
+        lifecycle.deactivate();
+        void Promise.resolve(lifecycle.drain())
+          .then(async () => { await capture.shutdown(); })
+          .catch((error: unknown) => {
+            this.logError('failed to tear down rejected run capture', error);
+          });
         throw new Error('OpenClaw run root was not admitted by capture.');
       }
       if (correlationTaskId) {
