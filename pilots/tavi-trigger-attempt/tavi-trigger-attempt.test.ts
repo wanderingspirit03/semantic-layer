@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +10,6 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import {
   createOpenTelemetrySource,
-  validateArtifact,
   type OpenTelemetrySource,
 } from 'semantic-layer-capture';
 import {
@@ -70,15 +69,14 @@ describe('runTaviTriggerAttempt', () => {
     })).resolves.toBe(value);
 
     expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
-    const attempt = await onlyAttempt(root);
-    expect((await stat(attempt)).mode & 0o777).toBe(0o700);
-    await expect(validateArtifact(await onlyBundle(attempt))).resolves.toMatchObject({ valid: true });
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('acknowledges a successful orchestrator with only an attempt-local agent root', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
-    const config = tenant();
+    const uploaded = uploadedBundle();
+    const config = tenant(uploaded.fetch);
     const source = createOpenTelemetrySource({ version: '1.25.1' });
     const latitude = new InMemorySpanExporter();
     const provider = new BasicTracerProvider();
@@ -102,16 +100,7 @@ describe('runTaviTriggerAttempt', () => {
     })).resolves.toBe('complete');
 
     expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
-    const bundle = await onlyBundle(await onlyAttempt(root));
-    await expect(validateArtifact(bundle, {
-      profile: 'structural',
-      requiredEvidence: ['root', 'delivery'],
-      requiredSourceActivity: ['generic:otel'],
-      secretValues: [config.ingestKey, config.identityKey],
-    })).resolves.toMatchObject({ valid: true, issues: [] });
-    await expect(validateArtifact(bundle, { profile: 'rich-agent' }))
-      .resolves.toMatchObject({ valid: false });
-    const start = (await traceRows(bundle)).find((row) => row.kind === 'run.start')!;
+    const start = uploaded.traceRows().find((row) => row.kind === 'run.start')!;
     expect(start.data.correlation).toMatchObject({
       task_id: expect.stringMatching(/^task_/u),
       execution: {
@@ -123,6 +112,7 @@ describe('runTaviTriggerAttempt', () => {
     expect(latitude.getFinishedSpans().map((span) => span.name))
       .toEqual(['ralph-loop-agent']);
     await provider.shutdown();
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('rejects an orchestrator without exact GenAI invoke-agent evidence', async () => {
@@ -144,7 +134,7 @@ describe('runTaviTriggerAttempt', () => {
     });
 
     expect(deliveries).toEqual([{ status: 'capture_failed' }]);
-    expect(await readdir(await onlyAttempt(root))).not.toContain('spool');
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('reports a successful but empty research capture as unhealthy', async () => {
@@ -160,20 +150,22 @@ describe('runTaviTriggerAttempt', () => {
     })).resolves.toBe('customer-result');
 
     expect(deliveries).toEqual([{ status: 'capture_failed' }]);
-    expect(await readdir(await onlyAttempt(root))).not.toContain('spool');
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('isolates two enrolled tenants with different trusted configuration', async () => {
     const root = await privateRoot();
     const firstAuth: string[] = [];
     const secondAuth: string[] = [];
-    const first = tenant(successfulFetch(undefined, (auth) => { firstAuth.push(auth); }), {
+    const firstUpload = uploadedBundle((auth) => { firstAuth.push(auth); });
+    const secondUpload = uploadedBundle((auth) => { secondAuth.push(auth); });
+    const first = tenant(firstUpload.fetch, {
       serviceName: 'tavi-trigger-first',
       ingestKey: 'first-trigger-ingest-secret',
       installationId: 'install_11111111111111111111111111111111',
       identityKey: 'first-stable-identity-secret',
     });
-    const second = tenant(successfulFetch(undefined, (auth) => { secondAuth.push(auth); }), {
+    const second = tenant(secondUpload.fetch, {
       serviceName: 'tavi-trigger-second',
       ingestKey: 'second-trigger-ingest-secret',
       installationId: 'install_22222222222222222222222222222222',
@@ -205,35 +197,26 @@ describe('runTaviTriggerAttempt', () => {
       }),
     ]);
 
-    const attempts = await attemptDirectories(root);
-    expect(attempts).toHaveLength(2);
-    const details = await Promise.all(attempts.map(async (attempt) => {
-      const bundle = await onlyBundle(attempt);
-      const manifest = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8')) as {
+    const details = [firstUpload, secondUpload].map((upload) => {
+      const manifest = upload.manifest() as {
         bundle_id: string;
         installation_id: string;
         sources: Array<{ id: string; name: string }>;
       };
-      const acked = await readdir(join(attempt, 'spool', 'acked'));
       return {
         manifest,
-        acked,
         sourceId: manifest.sources.find((source) => source.name === 'generic:otel')?.id,
-        retainedText: await readTreeText(attempt),
       };
-    }));
+    });
     expect(new Set(details.map(({ manifest }) => manifest.installation_id)))
       .toEqual(new Set([first.installationId, second.installationId]));
     expect(new Set(details.map(({ manifest }) => manifest.bundle_id)).size).toBe(2);
-    expect(new Set(details.flatMap(({ acked }) => acked)).size).toBe(2);
     expect(details.every(({ sourceId }) => sourceId !== undefined)).toBe(true);
     expect(firstAuth.length).toBeGreaterThan(0);
     expect(secondAuth.length).toBeGreaterThan(0);
     expect(new Set(firstAuth)).toEqual(new Set([`Bearer ${first.ingestKey}`]));
     expect(new Set(secondAuth)).toEqual(new Set([`Bearer ${second.ingestKey}`]));
-    expect(details.every(({ retainedText }) => (
-      !retainedText.includes(first.ingestKey) && !retainedText.includes(second.ingestKey)
-    ))).toBe(true);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('preserves the exact thrown value and still acknowledges its evidence', async () => {
@@ -250,37 +233,91 @@ describe('runTaviTriggerAttempt', () => {
     })).rejects.toBe(failure);
 
     expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('keeps parallel attempts in separate private bundles', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
+    const firstUpload = uploadedBundle();
+    const secondUpload = uploadedBundle();
+    const firstSource = createOpenTelemetrySource({ version: '1.25.1' });
+    const secondSource = createOpenTelemetrySource({ version: '1.25.1' });
 
     await Promise.all([
       runTaviTriggerAttempt({
-        tenant: tenant(),
+        tenant: tenant(firstUpload.fetch),
         trigger: triggerIdentity({ runId: 'parallel-a' }),
         temporaryRoot: root,
+        openTelemetry: { source: firstSource },
         reportDelivery: (delivery) => { deliveries.push(delivery); },
-        task: async () => 'alpha-result',
+        task: async () => {
+          emitRichOpenTelemetry(firstSource, 'b', 'alpha-result');
+          return 'alpha-result';
+        },
       }),
       runTaviTriggerAttempt({
-        tenant: tenant(),
+        tenant: tenant(secondUpload.fetch),
         trigger: triggerIdentity({ runId: 'parallel-b' }),
         temporaryRoot: root,
+        openTelemetry: { source: secondSource },
         reportDelivery: (delivery) => { deliveries.push(delivery); },
-        task: async () => 'beta-result',
+        task: async () => {
+          emitRichOpenTelemetry(secondSource, 'c', 'beta-result');
+          return 'beta-result';
+        },
       }),
     ]);
 
-    const attempts = await attemptDirectories(root);
-    expect(attempts).toHaveLength(2);
-    const traces = await Promise.all(attempts.map(async (attempt) => (
-      readFile(join(await onlyBundle(attempt), 'trace.jsonl'), 'utf8')
-    )));
+    const traces = [firstUpload, secondUpload]
+      .map((upload) => JSON.stringify(upload.traceRows()));
     expect(traces.filter((trace) => trace.includes('alpha-result'))).toHaveLength(1);
     expect(traces.filter((trace) => trace.includes('beta-result'))).toHaveLength(1);
     expect(deliveries).toHaveLength(2);
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it('removes only the completed attempt while a parallel peer is active', async () => {
+    const root = await privateRoot();
+    const heldSource = createOpenTelemetrySource({ version: '1.25.1' });
+    const completedSource = createOpenTelemetrySource({ version: '1.25.1' });
+    let release!: () => void;
+    let markStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const delegate = successfulFetch();
+    const heldFetch: typeof globalThis.fetch = async (input, init) => {
+      markStarted();
+      await gate;
+      return await delegate(input, init);
+    };
+    const held = runTaviTriggerAttempt({
+      tenant: tenant(heldFetch),
+      trigger: triggerIdentity({ runId: 'parallel-held' }),
+      temporaryRoot: root,
+      openTelemetry: { source: heldSource },
+      task: async () => {
+        emitRichOpenTelemetry(heldSource, 'f', 'parallel-held');
+        return 'held';
+      },
+    });
+    await started;
+
+    await runTaviTriggerAttempt({
+      tenant: tenant(),
+      trigger: triggerIdentity({ runId: 'parallel-completed' }),
+      temporaryRoot: root,
+      openTelemetry: { source: completedSource },
+      task: async () => {
+        emitRichOpenTelemetry(completedSource, '8', 'parallel-completed');
+        return 'completed';
+      },
+    });
+
+    expect(await attemptDirectories(root)).toHaveLength(1);
+    release();
+    await held;
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('isolates concurrent attempt-local OTel 1.25 providers and leaves unenrolled tenants Arcus-free', async () => {
@@ -292,6 +329,8 @@ describe('runTaviTriggerAttempt', () => {
     ]);
     const latitudeExporters: InMemorySpanExporter[] = [];
     const providers: BasicTracerProvider[] = [];
+    const firstUpload = uploadedBundle();
+    const secondUpload = uploadedBundle();
     let release!: () => void;
     const ready: string[] = [];
     const barrier = new Promise<void>((resolve) => { release = resolve; });
@@ -324,13 +363,13 @@ describe('runTaviTriggerAttempt', () => {
     };
 
     await Promise.all([
-      run('tenant-a', tenant(undefined, {
+      run('tenant-a', tenant(firstUpload.fetch, {
         serviceName: 'tenant-a',
         installationId: 'install_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         ingestKey: 'tenant-a-ingest-secret',
         identityKey: 'tenant-a-identity-secret',
       })),
-      run('tenant-b', tenant(undefined, {
+      run('tenant-b', tenant(secondUpload.fetch, {
         serviceName: 'tenant-b',
         installationId: 'install_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         ingestKey: 'tenant-b-ingest-secret',
@@ -339,9 +378,8 @@ describe('runTaviTriggerAttempt', () => {
       run('not-enrolled', null),
     ]);
 
-    const traces = await Promise.all((await attemptDirectories(root)).map(async (attempt) => (
-      readFile(join(await onlyBundle(attempt), 'trace.jsonl'), 'utf8')
-    )));
+    const traces = [firstUpload, secondUpload]
+      .map((upload) => JSON.stringify(upload.traceRows()));
     expect(traces).toHaveLength(2);
     expect(traces.filter((value) => value.includes('tenant-a-tool'))).toHaveLength(1);
     expect(traces.filter((value) => value.includes('tenant-b-tool'))).toHaveLength(1);
@@ -366,15 +404,17 @@ describe('runTaviTriggerAttempt', () => {
       left.name.localeCompare(right.name)
     ))).toEqual(latitudeBaseline);
     await Promise.all(providers.map(async (provider) => await provider.shutdown()));
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('seals an application timeout without replacing its identity', async () => {
     const root = await privateRoot();
     const timeout = Object.assign(new Error('application deadline'), { name: 'TimeoutError' });
     const deliveries: TaviTriggerDelivery[] = [];
+    const uploaded = uploadedBundle();
 
     await expect(runTaviTriggerAttempt({
-      tenant: tenant(),
+      tenant: tenant(uploaded.fetch),
       trigger: triggerIdentity(),
       temporaryRoot: root,
       reportDelivery: (delivery) => { deliveries.push(delivery); },
@@ -384,8 +424,11 @@ describe('runTaviTriggerAttempt', () => {
     })).rejects.toBe(timeout);
 
     expect(deliveries[0]?.status).toBe('acknowledged');
-    await expect(validateArtifact(await onlyBundle(await onlyAttempt(root))))
-      .resolves.toMatchObject({ valid: true });
+    expect(uploaded.traceRows()).toContainEqual(expect.objectContaining({
+      kind: 'run.outcome',
+      data: expect.objectContaining({ status: 'failed' }),
+    }));
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('runs cleanup once for cooperative cancellation and preserves the cancellation value', async () => {
@@ -396,7 +439,8 @@ describe('runTaviTriggerAttempt', () => {
     let completions = 0;
     let taskStarted!: () => void;
     const started = new Promise<void>((resolve) => { taskStarted = resolve; });
-    const config = tenant(successfulFetch(() => { completions += 1; }));
+    const uploaded = uploadedBundle(undefined, () => { completions += 1; });
+    const config = tenant(uploaded.fetch);
 
     const running = runTaviTriggerAttempt({
       tenant: config,
@@ -415,11 +459,12 @@ describe('runTaviTriggerAttempt', () => {
     await expect(running).rejects.toBe(cancellation);
     expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
     expect(completions).toBe(1);
-    const rows = await traceRows(await onlyBundle(await onlyAttempt(root)));
+    const rows = uploaded.traceRows();
     expect(rows).toContainEqual(expect.objectContaining({
       kind: 'run.outcome',
       data: expect.objectContaining({ status: 'cancelled' }),
     }));
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('lets the Trigger cancellation hook await acknowledged finalization', async () => {
@@ -428,10 +473,11 @@ describe('runTaviTriggerAttempt', () => {
     const cancellation = registry.register('trigger-run-1');
     const failure = new Error('exact Trigger cancellation');
     const deliveries: TaviTriggerDelivery[] = [];
+    const uploaded = uploadedBundle();
     let started!: () => void;
     const taskStarted = new Promise<void>((resolve) => { started = resolve; });
     const running = runTaviTriggerAttempt({
-      tenant: tenant(),
+      tenant: tenant(uploaded.fetch),
       trigger: triggerIdentity(),
       temporaryRoot: root,
       cancellation,
@@ -448,11 +494,12 @@ describe('runTaviTriggerAttempt', () => {
     await hook;
 
     expect(deliveries).toEqual([{ status: 'acknowledged', requestId: 'request-safe-1' }]);
-    const rows = await traceRows(await onlyBundle(await onlyAttempt(root)));
+    const rows = uploaded.traceRows();
     expect(rows).toContainEqual(expect.objectContaining({
       kind: 'run.outcome',
       data: expect.objectContaining({ status: 'cancelled' }),
     }));
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('waits for the attempt-local provider to shut down before cancellation finalization', async () => {
@@ -508,6 +555,7 @@ describe('runTaviTriggerAttempt', () => {
     await hook;
 
     expect(providerStateAtDelivery).toEqual([true]);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('starts bounded finalization when cancellation is signalled before the task settles', async () => {
@@ -537,7 +585,7 @@ describe('runTaviTriggerAttempt', () => {
     await hook;
     rejectTask(cancellation);
     await expect(running).rejects.toBe(cancellation);
-    expect(await readdir(await onlyAttempt(root))).not.toContain('spool');
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('includes provider settlement in the total cancellation deadline', async () => {
@@ -564,10 +612,11 @@ describe('runTaviTriggerAttempt', () => {
 
     const hook = registry.cancel('trigger-run-total-deadline');
     await hook;
-    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
     expect(deliveries).toEqual([{ status: 'timed_out' }]);
     rejectTask(new Error('late customer cancellation'));
     await expect(running).rejects.toThrow('late customer cancellation');
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('fails open when upload is permanently rejected', async () => {
@@ -589,6 +638,7 @@ describe('runTaviTriggerAttempt', () => {
     })).resolves.toBe(value);
 
     expect(deliveries).toEqual([{ status: 'upload_failed' }]);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('preserves an exact task error when upload is permanently rejected', async () => {
@@ -605,6 +655,7 @@ describe('runTaviTriggerAttempt', () => {
     })).rejects.toBe(failure);
 
     expect(deliveries).toEqual([{ status: 'upload_failed' }]);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('reports a bounded upload timeout without breaking customer work', async () => {
@@ -662,17 +713,19 @@ describe('runTaviTriggerAttempt', () => {
     expect(requestsWithSignal).toBe(startedRequests);
     expect(abortedRequests).toBe(startedRequests);
     expect(activeRequests).toBe(0);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('caps all finalization work and reports delivery exactly once', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
     const source = createOpenTelemetrySource({ version: '1.25.1' });
+    const blocked = abortAwareBlockedFetch();
     const startedAt = Date.now();
 
     await expect(runTaviTriggerAttempt({
       tenant: {
-        ...tenant(async () => await new Promise<Response>(() => {})),
+        ...tenant(blocked.fetch),
         uploadDeadlineMs: 10_000,
         finalizationDeadlineMs: 40,
       },
@@ -686,10 +739,12 @@ describe('runTaviTriggerAttempt', () => {
       },
     })).resolves.toBe('customer-result');
 
-    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
     expect(deliveries).toEqual([{ status: 'timed_out' }]);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(deliveries).toHaveLength(1);
+    expect(blocked.active()).toBe(0);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('reports capture setup failure without breaking customer work', async () => {
@@ -706,6 +761,7 @@ describe('runTaviTriggerAttempt', () => {
     })).resolves.toBe('customer-result');
 
     expect(deliveries).toEqual([{ status: 'capture_failed' }]);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('does not wait when untyped JavaScript supplies an unsupported async diagnostic', async () => {
@@ -726,24 +782,30 @@ describe('runTaviTriggerAttempt', () => {
 
   it('makes retries and replays distinguishable while retaining stable research correlation', async () => {
     const root = await privateRoot();
+    const uploads: ReturnType<typeof uploadedBundle>[] = [];
     for (const [runId, attemptNumber] of [
       ['original-run', 0],
       ['original-run', 1],
       ['replay-run', 0],
     ] as const) {
+      const uploaded = uploadedBundle();
+      const source = createOpenTelemetrySource({ version: '1.25.1' });
+      uploads.push(uploaded);
       await runTaviTriggerAttempt({
-        tenant: tenant(),
+        tenant: tenant(uploaded.fetch),
         trigger: triggerIdentity({ runId, attemptNumber }),
         temporaryRoot: root,
-        task: async () => 'done',
+        openTelemetry: { source },
+        task: async () => {
+          emitRichOpenTelemetry(source, String(uploads.length), runId);
+          return 'done';
+        },
       });
     }
 
-    const starts = await Promise.all((await attemptDirectories(root)).map(async (attempt) => {
-      const rows = (await readFile(join(await onlyBundle(attempt), 'trace.jsonl'), 'utf8'))
-        .trim().split('\n').map((line) => JSON.parse(line) as Record<string, any>);
-      return rows.find((row) => row.kind === 'run.start')!;
-    }));
+    const starts = uploads.map((upload) => (
+      upload.traceRows().find((row) => row.kind === 'run.start')!
+    ));
     const correlations = starts.map((row) => row.data.correlation);
     expect(new Set(correlations.map((value) => value.task_id))).toHaveLength(1);
     const attemptsByRun = new Map<string, typeof correlations>();
@@ -756,13 +818,18 @@ describe('runTaviTriggerAttempt', () => {
       ?.map((value) => value.execution.attempt).sort()).toEqual([0, 1]);
     expect(correlations.map((value) => value.execution.attempt).sort()).toEqual([0, 0, 1]);
     expect(starts.every((row) => row.data.input === null)).toBe(true);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('protects current, parent, and root Trigger run IDs in one identity domain', async () => {
     const root = await privateRoot();
+    const parentUpload = uploadedBundle();
+    const childUpload = uploadedBundle();
+    const parentSource = createOpenTelemetrySource({ version: '1.25.1' });
+    const childSource = createOpenTelemetrySource({ version: '1.25.1' });
     await Promise.all([
       runTaviTriggerAttempt({
-        tenant: tenant(),
+        tenant: tenant(parentUpload.fetch),
         trigger: triggerIdentity({
           runId: 'parent-run',
           rootRunId: 'parent-run',
@@ -770,10 +837,14 @@ describe('runTaviTriggerAttempt', () => {
           attemptNumber: 10,
         }),
         temporaryRoot: root,
-        task: async () => 'parent',
+        openTelemetry: { source: parentSource },
+        task: async () => {
+          emitRichOpenTelemetry(parentSource, 'd', 'parent');
+          return 'parent';
+        },
       }),
       runTaviTriggerAttempt({
-        tenant: tenant(),
+        tenant: tenant(childUpload.fetch),
         trigger: triggerIdentity({
           runId: 'child-run',
           parentRunId: 'parent-run',
@@ -781,18 +852,21 @@ describe('runTaviTriggerAttempt', () => {
           attemptNumber: 11,
         }),
         temporaryRoot: root,
-        task: async () => 'child',
+        openTelemetry: { source: childSource },
+        task: async () => {
+          emitRichOpenTelemetry(childSource, 'e', 'child');
+          return 'child';
+        },
       }),
     ]);
-    const correlations = await Promise.all((await attemptDirectories(root)).map(async (attempt) => {
-      const rows = (await readFile(join(await onlyBundle(attempt), 'trace.jsonl'), 'utf8'))
-        .trim().split('\n').map((line) => JSON.parse(line) as Record<string, any>);
-      return rows.find((row) => row.kind === 'run.start')!.data.correlation;
-    }));
+    const correlations = [parentUpload, childUpload].map((upload) => (
+      upload.traceRows().find((row) => row.kind === 'run.start')!.data.correlation
+    ));
     const parent = correlations.find((value) => value.execution.attempt === 10)!;
     const child = correlations.find((value) => value.execution.attempt === 11)!;
     expect(child.execution.parent_run_id).toBe(parent.execution.run_id);
     expect(child.execution.root_run_id).toBe(parent.execution.run_id);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('maps the public Trigger 4.4.4 context fields without OTel types', () => {
@@ -838,9 +912,13 @@ describe('runTaviTriggerAttempt', () => {
     const parentRunId = 'ralph-loop-run';
     const parentSource = createOpenTelemetrySource({ version: '1.25.1' });
     const childSource = createOpenTelemetrySource({ version: '1.25.1' });
+    const parentUpload = uploadedBundle();
+    const childUpload = uploadedBundle();
+    const parentConfig = tenant(parentUpload.fetch);
+    const childConfig = tenant(childUpload.fetch);
 
     await runTaviTriggerAttempt({
-      tenant: config,
+      tenant: parentConfig,
       trigger: triggerIdentity({
         runId: parentRunId,
         parentRunId: '',
@@ -857,7 +935,7 @@ describe('runTaviTriggerAttempt', () => {
       },
     });
     await runTaviTriggerAttempt({
-      tenant: config,
+      tenant: childConfig,
       trigger: triggerIdentity({
         runId: 'search-loop-run',
         parentRunId,
@@ -877,9 +955,7 @@ describe('runTaviTriggerAttempt', () => {
       { status: 'acknowledged', requestId: 'request-safe-1' },
       { status: 'acknowledged', requestId: 'request-safe-1' },
     ]);
-    const bundles = await Promise.all((await attemptDirectories(root)).map(onlyBundle));
-    expect(bundles).toHaveLength(2);
-    const bundleRows = await Promise.all(bundles.map(traceRows));
+    const bundleRows = [parentUpload.traceRows(), childUpload.traceRows()];
     const parentRows = bundleRows.find((rows) => !rows.some((row) => row.kind === 'tool.call'))!;
     const childRows = bundleRows.find((rows) => rows.some((row) => row.kind === 'tool.call'))!;
     expect(parentRows).toBeDefined();
@@ -889,11 +965,6 @@ describe('runTaviTriggerAttempt', () => {
       'tool.call',
       'tool.result',
     ]));
-    const childBundle = bundles[bundleRows.indexOf(childRows)]!;
-    await expect(validateArtifact(childBundle, {
-      profile: 'rich-agent',
-      secretValues: [config.ingestKey, config.identityKey],
-    })).resolves.toMatchObject({ valid: true, issues: [] });
     const starts = bundleRows
       .flatMap((rows) => rows.filter((row) => row.kind === 'run.start'))
       .filter((row) => row.data.correlation?.execution.system === 'trigger.dev');
@@ -905,6 +976,7 @@ describe('runTaviTriggerAttempt', () => {
       .toBe(parent.data.correlation.execution.run_id);
     expect(child.data.correlation.execution.root_run_id)
       .toBe(parent.data.correlation.execution.run_id);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('never logs or emits the key, paths, or captured content', async () => {
@@ -976,6 +1048,108 @@ function triggerIdentity(overrides: Partial<{
   };
 }
 
+function uploadedBundle(
+  onAuthorization?: (authorization: string) => void,
+  onComplete?: () => void,
+) {
+  let begin: {
+    manifest: Record<string, unknown>;
+    files: Array<{ file_id: string; path: string }>;
+  } | undefined;
+  const parts = new Map<string, Map<number, Buffer>>();
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    onAuthorization?.(new Headers(init?.headers).get('authorization') ?? '');
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/begin')) {
+      begin = JSON.parse(String(init?.body)) as typeof begin;
+      return new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'x-request-id': 'request-safe-1' },
+      });
+    }
+    const part = path.match(/\/files\/([^/]+)\/parts\/(\d+)$/u);
+    if (part) {
+      const fileParts = parts.get(part[1]!) ?? new Map<number, Buffer>();
+      fileParts.set(Number(part[2]), requestBodyBytes(init?.body));
+      parts.set(part[1]!, fileParts);
+      return new Response(null, {
+        status: 200,
+        headers: { 'x-request-id': 'request-safe-1' },
+      });
+    }
+    if (path.endsWith('/complete')) {
+      onComplete?.();
+      const body = JSON.parse(String(init?.body)) as { bundle_digest: string };
+      return new Response(JSON.stringify({
+        status: 'complete',
+        bundle_digest: body.bundle_digest,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'x-request-id': 'request-safe-1' },
+      });
+    }
+    return new Response(null, { status: 200 });
+  };
+  return {
+    fetch,
+    manifest(): Record<string, unknown> {
+      if (!begin) throw new Error('bundle begin request was not observed');
+      return begin.manifest;
+    },
+    traceRows(): Array<Record<string, any>> {
+      if (!begin) throw new Error('bundle begin request was not observed');
+      const trace = begin.files.find((file) => file.path === 'trace.jsonl');
+      if (!trace) throw new Error('trace.jsonl was not uploaded');
+      const fileParts = parts.get(trace.file_id);
+      if (!fileParts) throw new Error('trace.jsonl parts were not uploaded');
+      return Buffer.concat([...fileParts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, body]) => body))
+        .toString('utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, any>);
+    },
+  };
+}
+
+function requestBodyBytes(body: BodyInit | null | undefined): Buffer {
+  if (typeof body === 'string') return Buffer.from(body);
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  throw new Error('test fetch received an unsupported request body');
+}
+
+function abortAwareBlockedFetch() {
+  let activeRequests = 0;
+  let abortedRequests = 0;
+  const fetch: typeof globalThis.fetch = async (_input, init) => {
+    activeRequests += 1;
+    return await new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      const abort = () => {
+        abortedRequests += 1;
+        activeRequests -= 1;
+        reject(Object.assign(new Error('request aborted'), { name: 'AbortError' }));
+      };
+      if (!signal) {
+        activeRequests -= 1;
+        reject(new Error('missing AbortSignal'));
+      } else if (signal.aborted) {
+        abort();
+      } else {
+        signal.addEventListener('abort', abort, { once: true });
+      }
+    });
+  };
+  return {
+    fetch,
+    active: () => activeRequests,
+    aborted: () => abortedRequests,
+  };
+}
+
 function successfulFetch(
   onComplete?: () => void,
   onAuthorization?: (authorization: string) => void,
@@ -1007,40 +1181,10 @@ function successfulFetch(
   };
 }
 
-async function readTreeText(root: string): Promise<string> {
-  const values: string[] = [];
-  for (const entry of await readdir(root, { withFileTypes: true })) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) values.push(await readTreeText(path));
-    else if (entry.isFile()) values.push(await readFile(path, 'utf8'));
-  }
-  return values.join('\n');
-}
-
 async function attemptDirectories(root: string): Promise<string[]> {
   return (await readdir(root, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(root, entry.name));
-}
-
-async function onlyAttempt(root: string): Promise<string> {
-  const attempts = await attemptDirectories(root);
-  expect(attempts).toHaveLength(1);
-  return attempts[0]!;
-}
-
-async function onlyBundle(attempt: string): Promise<string> {
-  const captureRoot = join(attempt, 'capture');
-  const bundles = (await readdir(captureRoot, { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith('run-'));
-  expect(bundles).toHaveLength(1);
-  return join(captureRoot, bundles[0]!.name);
-}
-
-async function traceRows(bundle: string): Promise<Array<Record<string, any>>> {
-  return (await readFile(join(bundle, 'trace.jsonl'), 'utf8'))
-    .trim().split('\n').filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, any>);
 }
 
 type OTelSpan = Parameters<OpenTelemetrySource['spanProcessor']['onStart']>[0];

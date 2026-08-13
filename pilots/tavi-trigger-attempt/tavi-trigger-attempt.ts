@@ -1,6 +1,7 @@
-import { chmod, mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import {
   createCapture,
   validateArtifact,
@@ -10,6 +11,7 @@ import { createCloudUploader, type CloudUploader } from 'semantic-layer-cloud';
 import type { TaviTriggerCancellation } from './trigger-cancellation.js';
 
 const COOPERATIVE_CANCELLATION_SETTLE_MS = 5_000;
+const UPLOADER_TEARDOWN_RESERVE_MS = 1_000;
 
 export type TrustedTaviTenantConfig = Readonly<{
   serviceName: string;
@@ -80,18 +82,18 @@ export async function runTaviTriggerAttempt<T>(
 ): Promise<Awaited<T>> {
   const signal = options.cancellation?.signal ?? options.signal;
   if (options.tenant === null) {
-    options.cancellation?.completeTelemetry();
+    settle(() => options.cancellation?.completeTelemetry());
     await reportSafely(options.reportDelivery, { status: 'not_captured' });
     try {
       return await options.task({ signal }) as Awaited<T>;
     } finally {
-      options.cancellation?.release();
+      settle(() => options.cancellation?.release());
     }
   }
 
   const tenant = options.tenant;
   let capture: ReturnType<typeof createCapture> | undefined;
-  let attemptDirectory: string;
+  let attemptDirectory: string | undefined;
   try {
     const temporaryRoot = options.temporaryRoot ?? tmpdir();
     await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
@@ -110,12 +112,13 @@ export async function runTaviTriggerAttempt<T>(
     }
   } catch {
     await settleCapture(capture);
-    options.cancellation?.completeTelemetry();
+    if (attemptDirectory) await removeAttemptDirectory(attemptDirectory);
+    settle(() => options.cancellation?.completeTelemetry());
     await reportSafely(options.reportDelivery, { status: 'capture_failed' });
     try {
       return await options.task({ signal }) as Awaited<T>;
     } finally {
-      options.cancellation?.release();
+      settle(() => options.cancellation?.release());
     }
   }
 
@@ -127,18 +130,26 @@ export async function runTaviTriggerAttempt<T>(
     25_000,
   );
   const finalize = (expiresAt = cancellationExpiresAt
-    ?? Date.now() + finalizationDeadlineMs): Promise<void> => {
+    ?? performance.now() + finalizationDeadlineMs): Promise<void> => {
     finalization ??= finalizeWithinDeadline({
       capture: capture!,
-      attemptDirectory,
+      attemptDirectory: attemptDirectory!,
       tenant,
       trigger: options.trigger,
       successfulAttemptProfile: options.successfulAttemptProfile ?? 'rich-agent',
       successful: () => taskOutcome === 'succeeded',
       expiresAt,
     }).then(async (delivery) => {
-      await reportSafely(options.reportDelivery, delivery);
-    }).finally(() => { options.cancellation?.completeTelemetry(); });
+      const cleaned = await removeAttemptDirectory(attemptDirectory!);
+      const reported = !cleaned && delivery.status === 'acknowledged'
+        ? { status: 'capture_failed' } as const
+        : performance.now() >= expiresAt
+          ? { status: 'timed_out' } as const
+          : delivery;
+      await reportSafely(options.reportDelivery, reported);
+    }).finally(() => {
+      settle(() => options.cancellation?.completeTelemetry());
+    });
     return finalization;
   };
 
@@ -175,11 +186,11 @@ export async function runTaviTriggerAttempt<T>(
   );
 
   const onAbort = () => {
-    cancellationExpiresAt ??= Date.now() + finalizationDeadlineMs;
+    cancellationExpiresAt ??= performance.now() + finalizationDeadlineMs;
     const settleBudgetMs = Math.min(
       COOPERATIVE_CANCELLATION_SETTLE_MS,
       positiveDeadline(options.tenant?.shutdownDeadlineMs, 10_000),
-      Math.max(0, cancellationExpiresAt - Date.now()),
+      Math.max(0, cancellationExpiresAt - performance.now()),
     );
     void waitForSettlement(observed, settleBudgetMs)
       .then(async () => await finalize(cancellationExpiresAt));
@@ -191,7 +202,7 @@ export async function runTaviTriggerAttempt<T>(
   } finally {
     signal?.removeEventListener('abort', onAbort);
     await finalize();
-    options.cancellation?.release();
+    settle(() => options.cancellation?.release());
   }
 }
 
@@ -227,28 +238,29 @@ async function finalizeWithinDeadline(input: {
   successful: () => boolean;
   expiresAt: number;
 }): Promise<TaviTriggerDelivery> {
-  const deadlineMs = Math.max(0, input.expiresAt - Date.now());
   const control: FinalizationControl = {
     expired: false,
     expiresAt: input.expiresAt,
   };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const work = finalizeAttempt({ ...input, control }).catch(() => (
-    { status: 'capture_failed' } as const
-  ));
-  const timeout = new Promise<TaviTriggerDelivery>((resolve) => {
-    timer = setTimeout(() => {
-      control.expired = true;
-      if (control.uploader) {
-        void control.uploader.shutdown().catch(() => {});
-      }
-      resolve({ status: 'timed_out' });
-    }, deadlineMs);
-  });
+  let deadlineShutdown: Promise<void> | undefined;
+  const timer = setTimeout(() => {
+    control.expired = true;
+    if (control.uploader) {
+      deadlineShutdown = control.uploader.shutdown().catch(() => {});
+    }
+  }, Math.max(0, input.expiresAt - performance.now()));
   try {
-    return await Promise.race([work, timeout]);
+    return await finalizeAttempt({
+      ...input,
+      control,
+    });
+  } catch {
+    return activeWorkExpired(control)
+      ? { status: 'timed_out' }
+      : { status: 'capture_failed' };
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
+    if (deadlineShutdown) await deadlineShutdown;
   }
 }
 
@@ -266,7 +278,7 @@ async function finalizeAttempt(input: {
   let artifactPath: string | undefined;
   try {
     const closed = await input.capture.shutdown();
-    if (input.control.expired) return { status: 'timed_out' };
+    if (activeWorkExpired(input.control)) return { status: 'timed_out' };
     if (
       closed.state !== 'closed'
       || closed.rejected !== 0
@@ -288,7 +300,7 @@ async function finalizeAttempt(input: {
           : {}),
         secretValues: [input.tenant.ingestKey, input.tenant.identityKey],
       });
-      if (input.control.expired) return { status: 'timed_out' };
+      if (activeWorkExpired(input.control)) return { status: 'timed_out' };
       if (!validation.valid) captureHealthy = false;
       if (
         successfulProfile === 'orchestrator'
@@ -307,9 +319,10 @@ async function finalizeAttempt(input: {
   }
 
   let uploader: CloudUploader | undefined;
+  let uploaderShutdownHealthy = true;
   let delivery: TaviTriggerDelivery = { status: 'upload_failed' };
   try {
-    if (input.control.expired) return { status: 'timed_out' };
+    if (activeWorkExpired(input.control)) return { status: 'timed_out' };
     uploader = createCloudUploader({
       endpoint: input.tenant.endpoint,
       ingestKey: input.tenant.ingestKey,
@@ -319,9 +332,13 @@ async function finalizeAttempt(input: {
       ...(input.tenant.fetch ? { fetch: input.tenant.fetch } : {}),
     });
     input.control.uploader = uploader;
-    const receipt = await uploader.enqueueArtifact(artifactPath);
-    if (input.control.expired) return { status: 'timed_out' };
-    const remainingMs = input.control.expiresAt - Date.now();
+    const receipt = await uploader.enqueueArtifact(artifactPath, {
+      removeSourceAfterAdmissionFrom: join(input.attemptDirectory, 'capture'),
+    });
+    if (activeWorkExpired(input.control)) return { status: 'timed_out' };
+    const remainingMs = input.control.expiresAt
+      - performance.now()
+      - UPLOADER_TEARDOWN_RESERVE_MS;
     if (remainingMs <= 0) return { status: 'timed_out' };
     const flushed = await uploader.flush({
       deadlineMs: Math.min(
@@ -329,7 +346,7 @@ async function finalizeAttempt(input: {
         remainingMs,
       ),
     });
-    if (input.control.expired) return { status: 'timed_out' };
+    if (activeWorkExpired(input.control)) return { status: 'timed_out' };
     const acknowledged = receipt.state === 'acked' || (
       flushed.ackedBundles === 1
       && flushed.pendingBundles === 0
@@ -347,10 +364,14 @@ async function finalizeAttempt(input: {
     delivery = { status: 'upload_failed' };
   } finally {
     if (uploader) {
-      try { await uploader.shutdown(); } catch { /* fail open */ }
+      try { await uploader.shutdown(); } catch { uploaderShutdownHealthy = false; }
     }
     input.control.uploader = undefined;
   }
+  if (!uploaderShutdownHealthy && delivery.status === 'acknowledged') {
+    return { status: 'capture_failed' };
+  }
+  if (activeWorkExpired(input.control)) return { status: 'timed_out' };
   return delivery;
 }
 
@@ -408,6 +429,10 @@ function safeRequestId(value: string | null): string | undefined {
   return value && /^[A-Za-z0-9._:-]{1,128}$/u.test(value) ? value : undefined;
 }
 
+function activeWorkExpired(control: FinalizationControl): boolean {
+  return control.expired || performance.now() >= control.expiresAt;
+}
+
 function settle(action: (() => void) | undefined): void {
   if (!action) return;
   try { action(); } catch { /* fail open */ }
@@ -418,6 +443,15 @@ async function settleCapture(
 ): Promise<void> {
   if (!capture) return;
   try { await capture.shutdown(); } catch { /* fail open */ }
+}
+
+async function removeAttemptDirectory(attemptDirectory: string): Promise<boolean> {
+  try {
+    await rm(attemptDirectory, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function reportSafely(

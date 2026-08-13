@@ -6,7 +6,7 @@ tests, rollout steps, and customer names inside this directory.
 
 The example wraps one Trigger task attempt. It uses
 `semantic-layer-capture@0.2.0-beta.2` and
-`semantic-layer-cloud@0.1.0-pilot.4` without adding another published package.
+`semantic-layer-cloud@0.1.0-pilot.5` without adding another published package.
 Its context mapping is checked against `@trigger.dev/sdk@4.4.4`.
 
 The OpenClaw side uses these exact packages:
@@ -36,7 +36,7 @@ Install the exact package pair in Tavi's Trigger task package:
 ```sh
 npm install --save-exact \
   semantic-layer-capture@0.2.0-beta.2 \
-  semantic-layer-cloud@0.1.0-pilot.4
+  semantic-layer-cloud@0.1.0-pilot.5
 ```
 
 ## Required secrets
@@ -196,10 +196,21 @@ async diagnostic callback is not supported. This keeps the status visible
 without allowing a stalled diagnostic service to delay the customer result or
 error.
 
-The wrapper creates a private output directory and a private upload spool for
-each attempt. It reports `acknowledged` only after the cloud service confirms
-the expected bundle digest. A local pending spool is not considered safe in an
-isolated Trigger worker.
+The wrapper creates a private output directory and upload spool for each
+attempt. Both are disposable transport state, not a retry queue. After capture
+and uploader work become quiescent, the wrapper removes only the exact attempt
+directory returned by `mkdtemp()` and never removes the caller's temporary
+root. Cleanup applies after acknowledgement, upload or capture failure,
+timeout, cancellation, task failure, and partial setup. A cleanup failure does
+not replace the customer result or thrown value, but it prevents a successful
+telemetry status and fails the staging gate.
+
+The wrapper reports `acknowledged` only after the cloud service confirms the
+expected bundle digest. A local pending spool is not considered safe in an
+isolated Trigger worker. Capture source removal is transferred to the uploader
+only after complete spool admission, and final attempt cleanup happens only
+after strict uploader shutdown has joined processing and released spool
+ownership.
 
 A successful `ralph-loop` uses `successfulAttemptProfile: "orchestrator"`. It
 must contain protected Trigger correlation, a completed attempt outcome, and a
@@ -229,7 +240,8 @@ The task-local Trigger cancellation hook starts the same bounded finalization
 used by normal completion and waits for it. It first gives the cooperative task
 up to the smaller of five seconds or the capture shutdown budget to settle, so
 Tavi's attempt provider can flush and shut down before Arcus seals the bundle.
-The settlement wait and all later finalization work share one 25 second clock.
+The settlement wait and active finalization work share one monotonic 25 second
+cutoff. The wrapper reserves uploader teardown time before starting upload.
 A cooperative task that settles within the deadline records a cancelled
 outcome and can upload. If task cleanup does not settle before the deadline,
 the bundle reports `capture_failed` and is not uploaded. The wrapper still
@@ -245,10 +257,15 @@ Use these exact deadlines:
 }
 ```
 
-The final limit covers capture shutdown, validation, spool admission, upload,
-and uploader shutdown. It leaves five seconds inside Trigger's 30 second
-cancellation grace period. A deadline reports `timed_out` without changing the
-customer result or error.
+The cutoff covers cooperative settlement, capture shutdown, validation, spool
+admission, and upload. At the cutoff the uploader prevents new requests,
+aborts active requests, and the wrapper waits for uploader termination and
+attempt-directory cleanup before reporting `timed_out` or completing the
+cancellation hook. No upload or attempt-state mutation may continue after that
+report. Teardown is cooperative: an injected Fetch implementation must honor
+the supplied `AbortSignal`. A teardown overrun fails staging but still does not
+replace the customer result or error. A forced hard deadline would require a
+separate killable worker or process.
 
 The tests also run a parent ralph loop and child search loop through fresh
 OpenTelemetry sources. The parent passes the orchestrator rule. The child
