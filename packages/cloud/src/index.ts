@@ -320,6 +320,7 @@ function compatibleUploaderOptions(
 
 class SharedCloudUploaderLease implements CloudUploader {
   private stopped = false;
+  private shutdownPromise: Promise<void> | undefined;
 
   constructor(
     private readonly entry: SharedUploaderEntry,
@@ -344,8 +345,12 @@ class SharedCloudUploaderLease implements CloudUploader {
     return this.stopped ? { ...status, lifecycle: 'shutdown' } : status;
   }
 
-  async shutdown(): Promise<void> {
-    if (this.stopped) return;
+  shutdown(): Promise<void> {
+    this.shutdownPromise ??= this.performShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async performShutdown(): Promise<void> {
     this.stopped = true;
     this.entry.references -= 1;
     if (this.entry.references > 0) return;
@@ -353,11 +358,13 @@ class SharedCloudUploaderLease implements CloudUploader {
     try {
       await this.entry.core.shutdown();
     } finally {
-      void this.entry.core.termination().finally(() => {
+      try {
+        await this.entry.core.termination();
+      } finally {
         if (this.registry.get(this.entry.options.spool) === this.entry) {
           this.registry.delete(this.entry.options.spool);
         }
-      });
+      }
     }
   }
 
@@ -403,6 +410,7 @@ class DurableCloudUploader implements CloudUploader {
   private snapshot: CloudUploaderStatus;
   private persisted: PersistedState = { failures: [] };
   private processing: Promise<void> | undefined;
+  private scheduledProcessing: Promise<void> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly retryAt = new Map<string, number>();
   private readonly attempts = new Map<string, number>();
@@ -1013,7 +1021,7 @@ class DurableCloudUploader implements CloudUploader {
   async shutdown(): Promise<void> {
     await this.ready;
     if (this.terminated) {
-      await Promise.race([this.terminated, delay(1_000)]);
+      await this.terminated;
       return;
     }
     this.stopped = true;
@@ -1023,11 +1031,12 @@ class DurableCloudUploader implements CloudUploader {
     const work = [
       this.admission,
       ...(this.processing ? [this.processing] : []),
+      ...(this.scheduledProcessing ? [this.scheduledProcessing] : []),
     ];
     this.terminated = Promise.allSettled(work).then(async () =>
       this.releaseSpoolOwnership(),
     );
-    await Promise.race([this.terminated, delay(1_000)]);
+    await this.terminated;
   }
 
   private async initialize(): Promise<void> {
@@ -1609,6 +1618,7 @@ class DurableCloudUploader implements CloudUploader {
         acknowledged_at: acknowledgedAt,
       });
     } catch (error) {
+      if (this.stopped) return;
       const failure = classifyFailure(error);
       if (failure.kind === 'auth') {
         this.pausedKey = key;
@@ -1730,6 +1740,7 @@ class DurableCloudUploader implements CloudUploader {
   private async withRequest<Result>(
     action: (signal: AbortSignal) => Promise<Result>,
   ): Promise<Result> {
+    this.assertRunning();
     const controller = new AbortController();
     this.activeRequests.add(controller);
     const timeout = setTimeout(() => controller.abort(), 30_000);
@@ -1922,7 +1933,7 @@ class DurableCloudUploader implements CloudUploader {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
-      void this.processPending()
+      const scheduled = this.processPending()
         .then(() => this.refreshStatus())
         .catch(() => {
           if (!this.snapshot.warnings.includes('SPOOL_RUNTIME_ERROR')) {
@@ -1931,7 +1942,13 @@ class DurableCloudUploader implements CloudUploader {
               warnings: [...this.snapshot.warnings, 'SPOOL_RUNTIME_ERROR'],
             };
           }
+        })
+        .finally(() => {
+          if (this.scheduledProcessing === scheduled) {
+            this.scheduledProcessing = undefined;
+          }
         });
+      this.scheduledProcessing = scheduled;
     }, delayMs);
     this.retryTimer.unref?.();
   }

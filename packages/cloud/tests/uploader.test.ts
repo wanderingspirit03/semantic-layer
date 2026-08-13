@@ -902,16 +902,38 @@ describe('semantic-layer-cloud', () => {
     await restarted.shutdown();
   });
 
-  it('honors a flush deadline even when fetch never settles', async () => {
+  it('honors a flush deadline and joins an abort-aware request', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'semantic-layer-cloud-deadline-'),
     );
     const artifact = await copyExample(root);
+    let activeRequests = 0;
+    let abortedRequests = 0;
     const uploader = createCloudUploader({
       endpoint: 'https://ingest.invalid',
       ingestKey: 'test-ingest-key-123456',
       spoolDirectory: join(root, 'spool'),
-      fetch: async () => await new Promise<Response>(() => {}),
+      fetch: async (_input, init) => {
+        activeRequests += 1;
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          const abort = () => {
+            abortedRequests += 1;
+            activeRequests -= 1;
+            reject(Object.assign(new Error('request aborted'), {
+              name: 'AbortError',
+            }));
+          };
+          if (!signal) {
+            activeRequests -= 1;
+            reject(new Error('missing AbortSignal'));
+          } else if (signal.aborted) {
+            abort();
+          } else {
+            signal.addEventListener('abort', abort, { once: true });
+          }
+        });
+      },
     });
     await uploader.enqueueArtifact(artifact);
     const started = Date.now();
@@ -919,6 +941,127 @@ describe('semantic-layer-cloud', () => {
     expect(Date.now() - started).toBeLessThan(250);
     expect(result).toMatchObject({ pendingBundles: 1, timedOut: true });
     await uploader.shutdown();
+    expect(abortedRequests).toBeGreaterThan(0);
+    expect(activeRequests).toBe(0);
+  });
+
+  it('does not start a request after shutdown begins', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-shutdown-race-'),
+    );
+    const artifact = await copyExample(root);
+    let shutdownStarted = false;
+    let requestsAfterShutdown = 0;
+    let activeRequests = 0;
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async (_input, init) => {
+        if (shutdownStarted) requestsAfterShutdown += 1;
+        activeRequests += 1;
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          const abort = () => {
+            activeRequests -= 1;
+            reject(Object.assign(new Error('request aborted'), {
+              name: 'AbortError',
+            }));
+          };
+          if (!signal) {
+            activeRequests -= 1;
+            reject(new Error('missing AbortSignal'));
+          } else if (signal.aborted) {
+            abort();
+          } else {
+            signal.addEventListener('abort', abort, { once: true });
+          }
+        });
+      },
+    });
+
+    await uploader.enqueueArtifact(artifact);
+    shutdownStarted = true;
+    await uploader.shutdown();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(requestsAfterShutdown).toBe(0);
+    expect(activeRequests).toBe(0);
+
+    const reopened = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async () => new Response(null, { status: 503 }),
+    });
+    await reopened.shutdown();
+  });
+
+  it('makes concurrent shutdown calls join the same termination', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-concurrent-shutdown-'),
+    );
+    const artifact = await copyExample(root);
+    let releaseAbort!: () => void;
+    const abortReleased = new Promise<void>((resolve) => { releaseAbort = resolve; });
+    let requestStarted!: () => void;
+    const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async (_input, init) => {
+        requestStarted();
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', async () => {
+            await abortReleased;
+            reject(Object.assign(new Error('request aborted'), {
+              name: 'AbortError',
+            }));
+          }, { once: true });
+        });
+      },
+    });
+
+    await uploader.enqueueArtifact(artifact);
+    await started;
+    const first = uploader.shutdown();
+    const second = uploader.shutdown();
+    let secondSettled = false;
+    void second.then(() => { secondSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondSettled).toBe(false);
+
+    releaseAbort();
+    await Promise.all([first, second]);
+    expect(secondSettled).toBe(true);
+  });
+
+  it('joins the scheduled processing refresh before shutdown resolves', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'semantic-layer-cloud-scheduled-refresh-'),
+    );
+    const artifact = await copyExample(root);
+    let requests = 0;
+    const uploader = createCloudUploader({
+      endpoint: 'https://ingest.invalid',
+      ingestKey: 'test-ingest-key-123456',
+      spoolDirectory: join(root, 'spool'),
+      fetch: async () => {
+        requests += 1;
+        return new Response(null, { status: 503 });
+      },
+    });
+
+    await uploader.enqueueArtifact(artifact);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await uploader.shutdown();
+    const requestsAtShutdown = requests;
+    const statusAtShutdown = JSON.stringify(uploader.status());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(requests).toBe(requestsAtShutdown);
+    expect(JSON.stringify(uploader.status())).toBe(statusAtShutdown);
   });
 
   it('pauses on rejected authentication and resumes when the environment key changes', async () => {
