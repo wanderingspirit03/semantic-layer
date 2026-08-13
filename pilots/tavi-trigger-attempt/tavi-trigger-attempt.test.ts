@@ -610,8 +610,37 @@ describe('runTaviTriggerAttempt', () => {
   it('reports a bounded upload timeout without breaking customer work', async () => {
     const root = await privateRoot();
     const deliveries: TaviTriggerDelivery[] = [];
+    let activeRequests = 0;
+    let abortedRequests = 0;
+    let requestsWithSignal = 0;
+    let startedRequests = 0;
     const config = {
-      ...tenant(async () => await new Promise<Response>(() => {})),
+      ...tenant(async (_input, init) => {
+        startedRequests += 1;
+        activeRequests += 1;
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          let settled = false;
+          const abort = () => {
+            if (settled) return;
+            settled = true;
+            abortedRequests += 1;
+            activeRequests -= 1;
+            reject(Object.assign(new Error('request aborted'), {
+              name: 'AbortError',
+            }));
+          };
+          if (!signal) {
+            settled = true;
+            activeRequests -= 1;
+            reject(new Error('missing AbortSignal'));
+          } else {
+            requestsWithSignal += 1;
+            if (signal.aborted) abort();
+            else signal.addEventListener('abort', abort, { once: true });
+          }
+        });
+      }),
       uploadDeadlineMs: 20,
     };
     const source = createOpenTelemetrySource({ version: '1.25.1' });
@@ -629,6 +658,10 @@ describe('runTaviTriggerAttempt', () => {
     })).resolves.toBe('customer-result');
 
     expect(deliveries).toEqual([{ status: 'timed_out' }]);
+    expect(startedRequests).toBeGreaterThan(0);
+    expect(requestsWithSignal).toBe(startedRequests);
+    expect(abortedRequests).toBe(startedRequests);
+    expect(activeRequests).toBe(0);
   });
 
   it('caps all finalization work and reports delivery exactly once', async () => {
