@@ -1,6 +1,6 @@
 {
   "name": "semantic-layer-cloud",
-  "version": "0.1.0-pilot.4",
+  "version": "0.1.0-pilot.5",
   "type": "module",
   "description": "Durable framework-neutral uploader for Semantic Layer trace bundles",
   "license": "MIT",
