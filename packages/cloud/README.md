@@ -48,11 +48,13 @@ staging failures, and a full spool leave the source bundle in place.
 `flush()` uploads pending bundles until the deadline. `status()` returns bundle
 and byte counts, spool pressure, the oldest pending bundle, retry state,
 authentication pause state, quota state, the latest request ID, and safe failure
-details. `shutdown()` prevents new requests, aborts active requests, and waits
-for admission, processing, spool ownership release, and shared registry cleanup
-before it resolves. It leaves stored bundles in place. An injected `fetch`
-implementation must honor the supplied `AbortSignal`; otherwise shutdown cannot
-provide bounded cooperative teardown.
+details. `shutdown()` prevents new work through that uploader lease. When it is
+the last shared lease for a spool, it aborts active requests and waits for
+admission, processing, spool ownership release, and shared registry cleanup
+before it resolves. A non-last lease resolves after releasing its reference
+because another lease still owns the shared uploader. Stored bundles remain in
+place. An injected `fetch` implementation must honor the supplied `AbortSignal`;
+otherwise the last-lease shutdown cannot provide bounded cooperative teardown.
 
 `createCloudUploader()` accepts `endpoint`, `ingestKey`, `installationId`,
 `spoolDirectory`, `maxSpoolBytes`, `concurrency`, and a Fetch compatible
